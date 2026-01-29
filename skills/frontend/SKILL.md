@@ -9,6 +9,12 @@ This skill provides expert knowledge of the TxGlobalAuth authentication widget f
 
 **Important**: All TxGlobalAuth methods are available only after successful `init()`. Always structure code so that all API calls happen inside the `.then()` callback of `init()` or after `await init()`.
 
+## Integration Rules
+
+**Before writing any init code**, you MUST know the `appName`. First check the existing codebase for a TxGlobalAuth.init() call — if found, reuse that `appName`. If there is no existing init in the project and the user hasn't specified one, ask directly: "Which `appName` should I use for TxGlobalAuth init?" Do not guess or use a default value — the `appName` determines the authentication mode (Kratos, AD, or Anonymous) and using the wrong one will produce non-functional code.
+
+**CORS and local development**: The `prod` environment does **not** allow `localhost` origins — opening an HTML file directly or serving from `localhost` will cause CORS errors. Only `dev`, `tst`, and `uat` environments allow localhost. When the user is building a demo or developing locally, advise them to use a non-prod `env` value (e.g. `dev` or `tst`). Also note that non-prod environments have their own CDN script URLs — ask the developer for the correct URL if the environment is not `prod`.
+
 ## Widget Overview
 
 TxGlobalAuth is a JavaScript authentication widget loaded from CDN that provides modal/inline authentication UI, JWT token management, multi-provider support, and progressive user verification flows.
