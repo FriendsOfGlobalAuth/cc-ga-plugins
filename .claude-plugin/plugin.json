@@ -1,0 +1,19 @@
+{
+  "name": "global-auth",
+  "version": "1.0.0",
+  "description": "Global Auth plugins for Claude Code. Skills: global-auth:frontend (TxGlobalAuth widget integration expertise).",
+  "author": {
+    "name": "Dmitry Vorobyev",
+    "url": "https://github.com/VoDmAl"
+  },
+  "homepage": "https://github.com/FriendsOfGlobalAuth/cc-ga-plugins",
+  "license": "MIT",
+  "keywords": [
+    "global-auth",
+    "authentication",
+    "txglobalauth",
+    "frontend",
+    "widget",
+    "kratos"
+  ]
+}
