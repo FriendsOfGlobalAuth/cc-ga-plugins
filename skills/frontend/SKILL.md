@@ -226,10 +226,10 @@ The close button (X) behavior:
 
 ### Permission Denied Flow
 
-In a multi-product ecosystem, being authenticated does not mean the user is authorized for a specific product. Use `requirePermissionDeniedErrorChoice` to show a unified "access denied" screen with product-specific messaging. The dialog explains why access is denied, optionally offers a way to resolve the issue, and allows switching accounts (which silently logs out the current session — the dialog itself serves as confirmation of intent).
+In a multi-product ecosystem, being authenticated does not mean the user is authorized for a specific product. Use `requireUnauthorizedChoice` to show a unified "access denied" screen with product-specific messaging. The dialog explains why access is denied, optionally offers a way to resolve the issue, and allows switching accounts (which silently logs out the current session — the dialog itself serves as confirmation of intent).
 
 ```javascript
-const result = await TxGlobalAuth.requirePermissionDeniedErrorChoice({
+const result = await TxGlobalAuth.requireUnauthorizedChoice({
     title: 'Access denied',
     description: 'Your account does not have access to this service',
     buttonTitle: 'Create account'    // optional — shows custom action button
@@ -263,6 +263,18 @@ const unsubscribe = TxGlobalAuth.subscribeJWT((response) => {
 // Later (only if needed for some reason): unsubscribe();
 ```
 
+**React**: Always clean up subscriptions on unmount:
+```jsx
+useEffect(() => {
+    const unsubJWT = TxGlobalAuth.subscribeJWT(handleJWT);
+    const unsubLogout = TxGlobalAuth.subscribeGlobal('logout', handleLogout);
+    return () => {
+        unsubJWT();
+        unsubLogout();
+    };
+}, [handleJWT, handleLogout]);
+```
+
 ### Token Provider
 ```javascript
 const tp = TxGlobalAuth.getTokenProvider();
@@ -292,6 +304,33 @@ TxGlobalAuth.getJwt();                    // Parsed JWT object, or null
 const { userId } = await TxGlobalAuth.getGlobalVisitor(); // Kratos userId, or null if not authenticated
 const { token } = await TxGlobalAuth.getReadOnlyToken();  // Long-lived readonly JWT (rejects if not authorized)
 ```
+
+## AD Provider Session Data
+
+For AD-type providers (`AD_OFFICE`, `AD_OFFICE_OTP`, `AD_OFFICE_SMS`, `AD_WTE`, etc.), the JWT response contains user identity in `session.person`. The exact set of fields may vary across AD configurations, but the typical structure is:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `string` | User GUID (likely LDAP/AD objectGUID — not a Kratos ID) |
+| `name` | `string` | First name |
+| `lastname` | `string` | Last name |
+| `middlename` | `string` | Patronymic (may be absent in some AD configurations) |
+| `email` | `string` | Corporate email |
+| `login` | `string` | AD sAMAccountName |
+| `verifiedPhone` | `string` | Phone number (may be empty) |
+| `gender` | `number` | Gender |
+
+`session.userType` is `"EMPLOYEE_USER_TYPE"` for AD-authenticated users.
+
+**AD provider variants**:
+- `AD_OFFICE` — standard AD authentication (username + password)
+- `AD_OFFICE_OTP` — AD with OTP as second factor
+- `AD_OFFICE_SMS` — AD with SMS as second factor
+- `AD_WTE` — separate domain controller (no 2FA at this time)
+
+**What is NOT available from any TxGlobalAuth provider**: job title, department, office location, manager, expertise/skills. These require direct LDAP/AD queries on the backend.
+
+**Backend token validation**: The JWT payload contains `session.person` in a compressed (`zipped: true`) form. The backend must validate and decode the token — see the `global-auth:backend` skill for approaches.
 
 ## Event Subscriptions
 
@@ -325,8 +364,9 @@ TxGlobalAuth.subscribeOnTokenRenewError((error) => {
 ### Global Event Bus
 ```javascript
 // subscribeGlobal(eventName, callback, callOnce?)
-// eventName: 'finish' | 'logout' | 'registration' | 'authorization'
-//          | 'agreementAccepted' | 'authenticationChange'
+// eventName: 'authorization' | 'registration' | 'logout' | 'finish'
+//          | 'authenticationChange' | 'agreementAccepted' | 'passwordChange'
+//          | 'visitorChange' | 'backgroundVisitorChange'
 
 const unsubscribe = TxGlobalAuth.subscribeGlobal('authenticationChange', (isAuthenticated) => {
     // Fires on any auth state change (including from other tabs)
@@ -429,6 +469,192 @@ TxGlobalAuth.dispose();  // Destroy widget instance
 TxGlobalAuth.debug.enableLogging();
 TxGlobalAuth.debug.screenNavigationEnable = true;
 ```
+
+## TypeScript Declarations
+
+Reference types for the TxGlobalAuth public API. Use these when declaring `window.TxGlobalAuth` or typing callbacks. This is a subset of the most commonly used methods — consult the widget source for the full API.
+
+```typescript
+// --- Init options ---
+type Env = 'dev' | 'tst' | 'uat' | 'prod';
+type Lang = 'ru' | 'en';
+type Theme = 'light' | 'dark';
+type Palette = 'finam' | 'j2t' | 'lime' | 'limex' | 'purple' | 'takeProfit' | 'j2tGlobal';
+type Variant = 'finam' | 'spc' | 'mma';
+
+interface TxGlobalAuthOptions {
+    env: Env;
+    appName: string;
+    appVersion?: string;
+    lang?: Lang;
+    palette?: Palette;
+    theme?: Theme;
+    parseUrl?: boolean;
+    preserveQueryParams?: boolean;
+    logoutWithoutConfirmation?: boolean;
+    disableInitAuthorization?: boolean;
+    // For advanced txAuth/globalAuth provider config, see official docs
+}
+
+// --- Response types ---
+interface ILoginResponse {
+    token: string;
+    session: Session;
+    sessionContext: SessionContext;
+    firebase: string;
+    provider: string;
+    created: number;
+    renewExp: number;
+    // Additional fields: exp, spinExp, spinReq, receiveTime, confirmation (deprecated)
+}
+
+interface Session {
+    person: PersonData;
+    accounts: unknown[];
+    permissions: unknown[];
+    userType: string;  // e.g. "EMPLOYEE_USER_TYPE"
+    companyId: string;
+    firms: unknown[];
+    segments: unknown[];
+}
+
+interface PersonData {
+    id: string;           // User GUID — semantics vary by provider (see backend skill)
+    name?: string;        // First name (may be absent for Kratos L1)
+    lastname?: string;    // Last name (may be absent for Kratos L1)
+    middlename?: string;  // Patronymic (AD-specific, may be absent)
+    email?: string;       // Email
+    login?: string;       // AD sAMAccountName or Kratos login (may be absent for Kratos L1)
+    verifiedPhone?: string; // Phone (may be absent)
+    gender?: number;
+    kratosId?: string;    // Present for Kratos providers, absent for AD
+}
+
+interface TokenProvider {
+    getFreshToken(): Promise<string>;
+    getKratosId(): string | null;
+    getPersonId(): string | null;
+    getResponse(): ILoginResponse;
+    subscribeTokenChanges(callback: (token: string | null) => void): () => void;
+}
+
+interface RequireUserIdentifiersResult {
+    hasVerifiedEmail: boolean;
+    hasVerifiedPhone: boolean;
+}
+
+type UserProfileData = {
+    avatar?: string;
+    firstName?: string;
+    lastName?: string;
+    gender?: 'male' | 'female' | null;
+    phone?: string;
+};
+
+type RequireUnauthorizedChoiceResult = {
+    ok: boolean;
+    button: 'default' | 'custom';
+};
+
+// --- Inline mount options ---
+interface HighLevelInlineMountOptions {
+    prepareContainer: () => HTMLElement | Promise<HTMLElement>;
+    removeContainer?: () => void | Promise<void>;
+}
+
+// --- Global event types ---
+type SubscribeGlobalEvent =
+    | 'authorization' | 'registration' | 'logout' | 'finish'
+    | 'authenticationChange' | 'agreementAccepted' | 'passwordChange'
+    | 'visitorChange' | 'backgroundVisitorChange'
+    | 'beforeMount' | 'afterMount' | 'beforeUnmount' | 'afterUnmount';
+
+// --- Error types ---
+interface ServiceError {
+    code?: number;
+    message?: string;
+    details?: string;
+}
+
+// --- Window declaration ---
+interface Window {
+    TxGlobalAuth?: {
+        // Lifecycle
+        init(options: TxGlobalAuthOptions): Promise<typeof TxGlobalAuth>;
+        dispose(): Promise<void>;
+        subscribeInitialized(callback: (widget: typeof TxGlobalAuth) => void): () => void;
+
+        // Authentication
+        authenticate(options?: { initialData?: { email?: string; phone?: string }; mountInline?: HighLevelInlineMountOptions; disableSkip?: boolean }): Promise<ILoginResponse>;
+        authorize(options?: { mountInline?: HighLevelInlineMountOptions }): Promise<ILoginResponse>;
+        authorizeAnonymously(options?: Record<string, unknown>): Promise<ILoginResponse>;
+        logout(options?: Record<string, unknown>): Promise<void>;
+        loseClientAuthorization(): Promise<void>;
+
+        // State checks (all synchronous)
+        isAuthenticatedAnonymous(): boolean;
+        isAuthenticatedUserAccount(): boolean;
+        isAuthenticatedUserClient(): boolean;
+
+        // JWT & tokens
+        subscribeJWT(callback: (response: ILoginResponse | null, variant?: Variant) => void): () => void;
+        getJwt(): ILoginResponse | null;
+        getTokenProvider(variant?: Variant): TokenProvider;
+        forceRenew(): Promise<ILoginResponse>;
+        getReadOnlyToken(): Promise<{ token: string }>;
+        getGlobalVisitor(): Promise<{ userId: string | null }>;
+        updateTokenScope(payload: { scope: Record<string, unknown>; variant?: Variant }): Promise<void>;
+
+        // Progressive verification
+        requireAgreements(options?: { mountInline?: HighLevelInlineMountOptions; disableSkip?: boolean }): Promise<void>;
+        requirePassword(options?: { mountInline?: HighLevelInlineMountOptions; disableSkip?: boolean }): Promise<void>;
+        requirePhone(options?: { initialData?: { phone?: string }; mountInline?: HighLevelInlineMountOptions; disableSkip?: boolean }): Promise<RequireUserIdentifiersResult>;
+        requireEmail(options?: { initialData?: { email?: string }; mountInline?: HighLevelInlineMountOptions; disableSkip?: boolean }): Promise<RequireUserIdentifiersResult>;
+        requireUserProfileData(options?: { requirements?: Record<string, boolean>; initialData?: Partial<UserProfileData>; validator?: (key: string, value: string) => void; mountInline?: HighLevelInlineMountOptions; disableSkip?: boolean }): Promise<UserProfileData>;
+        requireUnauthorizedChoice(options: { title: string; description: string; buttonTitle?: string }): Promise<RequireUnauthorizedChoiceResult>;
+
+        // Error subscriptions
+        subscribeOnLoginError(callback: (error: ServiceError) => void): () => void;
+        subscribeOnTokenRenewError(callback: (error: ServiceError) => void): () => void;
+
+        // Global events
+        subscribeGlobal(eventName: SubscribeGlobalEvent, callback: (...args: unknown[]) => void, once?: boolean): () => void;
+
+        // UI dialogs
+        showUserProfileData(options?: { requirements?: Record<string, boolean>; initialData?: Partial<UserProfileData>; disableSkip?: boolean; mountInline?: HighLevelInlineMountOptions }): Promise<UserProfileData>;
+        showPasswordChange(options?: { mountInline?: HighLevelInlineMountOptions }): Promise<void>;
+        showSessions(options?: { mountInline?: HighLevelInlineMountOptions }): Promise<void>;
+        showSettings(options?: { mountInline?: HighLevelInlineMountOptions }): Promise<void>;
+        showAgreements(options?: { mountInline?: HighLevelInlineMountOptions }): Promise<void>;
+
+        // User data
+        getUserProfileData(): Promise<UserProfileData>;
+        setUserProfileData(data: Partial<UserProfileData>): void;
+        getVerificationInfo(): Promise<RequireUserIdentifiersResult>;
+        getIdentifiers(): Promise<{ emails: string[]; phones: string[]; logins: string[] }>;
+
+        // Navigation & cross-product
+        openApp(payload: { url: string; target?: '_self' | '_blank' }): Promise<Window | undefined>;
+
+        // UI customization
+        setLang(lang: Lang): void;
+        setTheme(theme: Theme): void;
+        setPalette(palette: Palette): void;
+
+        // Client creation
+        createClient(options?: { type?: string; source?: number; initialData?: Record<string, string>; mountInline?: HighLevelInlineMountOptions }): Promise<ILoginResponse>;
+
+        // Debug
+        debug: {
+            enableLogging(options?: Record<string, unknown>): void;
+            disableLogging(options?: Record<string, unknown>): void;
+            screenNavigationEnable: boolean;
+        };
+    };
+}
+```
+
+**Note**: The `isAuthenticated*` methods and `getJwt()` are **synchronous** — do not `await` them. The `authenticate()`, `authorize()`, `logout()`, and all `require*()` / `show*()` methods return Promises.
 
 ## Vanilla JS Quick Start
 

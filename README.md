@@ -9,6 +9,7 @@ Part of [ga-claude-code-marketplace](https://github.com/FriendsOfGlobalAuth/clau
 | Skill | Command | Description |
 |-------|---------|-------------|
 | frontend | `/global-auth:frontend` | TxGlobalAuth widget integration — initialization, auth flows, token management, UI embedding |
+| backend | `/global-auth:backend` | JWT validation, session data extraction, and common misconceptions about the token format |
 
 ## Installation
 
@@ -64,7 +65,9 @@ cc-ga-plugins/
 ├── .claude-plugin/
 │   └── plugin.json
 └── skills/
-    └── frontend/
+    ├── frontend/
+    │   └── SKILL.md
+    └── backend/
         └── SKILL.md
 ```
 

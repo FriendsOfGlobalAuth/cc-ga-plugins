@@ -36,3 +36,7 @@ GitHub source: `FriendsOfGlobalAuth/cc-ga-plugins`.
 2. Preserve YAML frontmatter structure
 3. Bump patch version in `.claude-plugin/plugin.json`
 4. If skill name or description changed — update README.md skills table and marketplace description
+
+## Skill Description Quality
+
+The `description` field in SKILL.md frontmatter is the PRIMARY auto-activation signal. Always include: all name variants, technology keywords, task verbs, "Use when..." trigger, and scope markers. See `docs/llm/skill-description-patterns.md` for the full pattern.
