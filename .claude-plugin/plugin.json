@@ -1,6 +1,6 @@
 {
   "name": "global-auth",
-  "version": "1.1.0",
+  "version": "1.2.1",
   "description": "Global Auth plugins for Claude Code. Skills: global-auth:frontend (TxGlobalAuth widget integration), global-auth:backend (JWT validation and session data extraction).",
   "author": {
     "name": "Dmitry Vorobyev",

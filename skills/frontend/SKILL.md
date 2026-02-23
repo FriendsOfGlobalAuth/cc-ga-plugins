@@ -44,7 +44,9 @@ Note: `isAuthenticatedUserAccount()` returns `true` for both Kratos L1 and AD-au
 
 ### Key Integration Concepts
 
-**1. Reactive token updates**: The product must always be ready for token changes from the widget — not only as a result of user actions in this tab. The user may log in, log out, or have their token refreshed in another browser tab. Use `subscribeJWT` to react to these signals. The callback fires immediately upon subscription (with the current token or `null`), and then on every subsequent change.
+**1. `subscribeJWT` is the single source of truth**: All auth state management must go through the `subscribeJWT` callback — it is the **only** place where you read and update the current user, token, and session. The callback fires immediately on subscription (with the current token or `null`), and then on every change: login, logout, token refresh, session changes from other tabs. **Handle both cases**: when `response` has a token (user is authenticated) and when it is `null` (user logged out or session expired). Button handlers for login/logout should only call `authenticate()`/`authorize()`/`logout()` — they must **not** update app state directly. The state update happens reactively when `subscribeJWT` fires in response.
+
+> **Anti-pattern**: Do not split auth state management between `subscribeJWT` (for login) and `subscribeGlobal('logout')` (for logout). This leads to stale UI when logout happens externally (other tab, console, session expiry). `subscribeJWT` already covers logout — the callback fires with `null`.
 
 **2. Progressive requirement chains**: For actions that require a specific auth level, build a chain of `authenticate()` → `require*()` calls in the action handler. Every method in the chain is idempotent — if the requirement is already met, it resolves instantly. For example, a "Post comment" button handler should call `authenticate()` → `requireAgreements()` → `requireEmail()` → then submit the comment with the JWT token. This way, guests get the full onboarding flow, while authenticated users skip straight to submission.
 
@@ -130,10 +132,23 @@ TxGlobalAuth.authenticate({
 
 ### Active Directory Mode
 ```javascript
-TxGlobalAuth.authorize();
+// Resolves with ILoginResponse (same structure as authenticate())
+const result = await TxGlobalAuth.authorize();
+// result.session.person — user data (login, name, email, etc.)
+// result.token — JWT string
 ```
 
 Only available for `appName` configurations that use AD. Will not work in Kratos-mode products and vice versa.
+
+**Idempotent**: If the user already has an active AD session, `authorize()` resolves immediately without showing any UI — same behavior as `authenticate()` in Kratos mode. This is useful for restoring state on page reload.
+
+**After `authorize()`**, the full API works the same as after `authenticate()`: `subscribeJWT` fires with the token, `isAuthenticatedUserAccount()` returns `true`, `getTokenProvider()` returns the token and session data. The only differences are:
+- `getTokenProvider().getKratosId()` returns an empty string (AD users don't have a Kratos ID)
+- `getIdentifiers()` does not return data for AD sessions (currently Kratos-only)
+- `session.person.login` contains the AD sAMAccountName (e.g. `"dvorobiev"`)
+- `session.person.kratosId` is absent
+
+See **AD Provider Session Data** below for the full `session.person` structure.
 
 ### Anonymous (Device) Mode
 ```javascript
@@ -253,36 +268,50 @@ The callback fires **immediately** on subscription with the current state (token
 
 ```javascript
 const unsubscribe = TxGlobalAuth.subscribeJWT((response) => {
-    // response.token     - JWT string (or null if not authenticated)
-    // response.session   - Session object
-    // response.session.person   - Person data
-    // response.session.accounts - Account array
-    // response.provider  - Provider ID
+    if (response) {
+        // Authenticated — update app state with user data
+        // response.token     - JWT string
+        // response.session   - Session object
+        // response.session.person   - Person data (name, email, login, etc.)
+        // response.session.accounts - Account array
+        // response.provider  - Provider ID
+    } else {
+        // Not authenticated (guest, logged out, or session expired)
+        // Clear user state in your app here
+    }
 });
 
 // Later (only if needed for some reason): unsubscribe();
 ```
 
-**React**: Always clean up subscriptions on unmount:
+**This callback is your single source of truth** — handle both branches. Do not manage auth state elsewhere (see Key Integration Concepts above).
+
+**React**: Use `subscribeJWT` as the sole auth state driver. Clean up on unmount:
 ```jsx
 useEffect(() => {
-    const unsubJWT = TxGlobalAuth.subscribeJWT(handleJWT);
-    const unsubLogout = TxGlobalAuth.subscribeGlobal('logout', handleLogout);
-    return () => {
-        unsubJWT();
-        unsubLogout();
-    };
-}, [handleJWT, handleLogout]);
+    const unsub = TxGlobalAuth.subscribeJWT((response) => {
+        if (response) {
+            setUser(response.session.person);
+            setToken(response.token);
+        } else {
+            setUser(null);
+            setToken(null);
+        }
+    });
+    return () => unsub();
+}, []);
 ```
 
 ### Token Provider
 ```javascript
 const tp = TxGlobalAuth.getTokenProvider();
 tp.getResponse().token;   // JWT string
-tp.getKratosId();         // Kratos user ID
-tp.getPersonId();         // Person ID
-tp.getResponse().session; // Full session
+tp.getKratosId();         // Kratos user ID (empty string for AD providers)
+tp.getPersonId();         // Person ID (works for all providers)
+tp.getResponse().session; // Full session (works for all providers)
 ```
+
+**AD note**: For AD-authenticated users, use `tp.getPersonId()` or `tp.getResponse().session.person` to identify the user. `tp.getKratosId()` is only meaningful for Kratos providers.
 
 ### Force Renewal
 
@@ -362,28 +391,60 @@ TxGlobalAuth.subscribeOnTokenRenewError((error) => {
 ```
 
 ### Global Event Bus
+
+`subscribeGlobal` fires on **widget UI events and authentication state changes**. These events are **not directly tied to JWT changes** — for reactive token/session state, use `subscribeJWT` (see Key Integration Concepts). Use `subscribeGlobal` for UI lifecycle hooks, analytics, and reacting to specific user actions in the widget.
+
 ```javascript
-// subscribeGlobal(eventName, callback, callOnce?)
-// eventName: 'authorization' | 'registration' | 'logout' | 'finish'
-//          | 'authenticationChange' | 'agreementAccepted' | 'passwordChange'
-//          | 'visitorChange' | 'backgroundVisitorChange'
-
-const unsubscribe = TxGlobalAuth.subscribeGlobal('authenticationChange', (isAuthenticated) => {
-    // Fires on any auth state change (including from other tabs)
-    console.log('Authenticated:', isAuthenticated);
-});
-
-const unsubscribe = TxGlobalAuth.subscribeGlobal('agreementAccepted', (acceptedKey) => {
-    console.log('Agreement accepted:', acceptedKey);
-});
-
-// callOnce: optional boolean — if true, callback fires only once
-const unsubscribe = TxGlobalAuth.subscribeGlobal('logout', () => {
-    console.log('User logged out');
-}, true);
+const unsubscribe = TxGlobalAuth.subscribeGlobal(eventName, callback, callOnce?);
+// callOnce: optional boolean — if true, callback fires only once, then auto-unsubscribes
 ```
 
-**Note**: `subscribeGlobal` tracks *authentication* events, not *authorization*. For JWT/authorization state, use `subscribeJWT` instead.
+**Authentication events** (not tied to JWT):
+
+| Event | Callback | Description |
+|-------|----------|-------------|
+| `authorization` | `() => void` | User successfully logged in via widget UI. Not fired on token refresh or background sync. |
+| `registration` | `() => void` | User registered via widget UI. |
+| `logout` | `() => void` | User lost authentication: via `logout()` call, UI logout flow, or account switch. |
+| `authenticationChange` | `(isAuthorized: boolean) => void` | Authentication status changed. Not tied to JWT — tracks the global auth state. |
+| `visitorChange` | `({ userId: string \| null }) => void` | Global authenticated user changed. Not tied to JWT. |
+| `backgroundVisitorChange` | `({ userId: string \| null }) => void` | Background sync (cookies/localStorage) detected a user change. |
+
+**User action events**:
+
+| Event | Callback | Description |
+|-------|----------|-------------|
+| `agreementAccepted` | `(agreementKey: string) => void` | User accepted an agreement via widget UI. |
+| `passwordChange` | `() => void` | User changed password via widget UI. |
+| `unverifiedIdentifierEntered` | `(payload) => void` | User submitted a form with identifiers (login, registration, add identifier). Fires per field. Value may be masked. |
+| `finish` | `() => void` | Widget process completed. Not the same as unmount — use only if you understand the distinction. |
+
+**UI lifecycle events**:
+
+| Event | Callback | Description |
+|-------|----------|-------------|
+| `beforeMount` | `() => void` | Fires synchronously after `mountInline.prepareContainer()`, before widget mounts. |
+| `afterMount` | `() => void` | Fires synchronously after widget mounts. |
+| `beforeUnmount` | `() => void` | Fires synchronously before widget unmounts. |
+| `afterUnmount` | `() => void` | Fires synchronously after unmount and `mountInline.removeContainer()`. |
+
+```javascript
+// Example: analytics tracking
+TxGlobalAuth.subscribeGlobal('authorization', () => {
+    analytics.track('user_logged_in');
+});
+
+TxGlobalAuth.subscribeGlobal('agreementAccepted', (key) => {
+    analytics.track('agreement_accepted', { key });
+});
+
+// Example: inline mount lifecycle
+TxGlobalAuth.subscribeGlobal('afterMount', () => {
+    console.log('Widget UI is now visible');
+});
+```
+
+> **Do not use `subscribeGlobal` for auth state management.** The `logout` event fires when the widget processes a logout — but it does not cover all cases where the user loses their session (e.g. token expiry, server-side revocation). For reliable auth state, use `subscribeJWT` which fires with `null` on any session loss. See **Key Integration Concepts** above.
 
 ## User Profile
 
@@ -405,11 +466,11 @@ const data = await TxGlobalAuth.getUserProfileData();
 // Get verification status
 const verInfo = TxGlobalAuth.getVerificationInfo();
 
-// Get user identifiers (masked for privacy)
+// Get user identifiers (masked for privacy) — Kratos-only
 const { emails, phones, logins } = await TxGlobalAuth.getIdentifiers();
 ```
 
-> **Note for integrators**: `getUserProfileData`, `getVerificationInfo`, and `getIdentifiers` are under active refactoring consideration. Their behavior may be non-obvious. When using these methods, confirm with the developer that the expected behavior matches their understanding.
+> **Note for integrators**: `getUserProfileData`, `getVerificationInfo`, and `getIdentifiers` are under active refactoring consideration. Their behavior may be non-obvious. When using these methods, confirm with the developer that the expected behavior matches their understanding. **`getIdentifiers()` currently works only for Kratos providers** — for AD sessions, retrieve user data from `subscribeJWT` callback's `response.session.person` or from `getTokenProvider().getResponse().session.person` instead.
 
 ## UI Management
 
@@ -566,6 +627,7 @@ interface HighLevelInlineMountOptions {
 type SubscribeGlobalEvent =
     | 'authorization' | 'registration' | 'logout' | 'finish'
     | 'authenticationChange' | 'agreementAccepted' | 'passwordChange'
+    | 'unverifiedIdentifierEntered'
     | 'visitorChange' | 'backgroundVisitorChange'
     | 'beforeMount' | 'afterMount' | 'beforeUnmount' | 'afterUnmount';
 
@@ -658,7 +720,7 @@ interface Window {
 
 ## Vanilla JS Quick Start
 
-Complete working example showing initialization, token subscription, and auth level detection:
+Complete working example showing initialization, token subscription, and auth level detection. This pattern works for **both Kratos and AD modes** — the `subscribeJWT` callback receives the same `ILoginResponse` structure regardless of provider:
 
 ```javascript
 function onloadTxGlobalAuth() {
@@ -667,6 +729,7 @@ function onloadTxGlobalAuth() {
         appName: 'myApp'  // Ask developer for the correct value
     }).then(() => {
         // Subscribe to authentication state changes
+        // Works for ALL modes: Kratos, AD, Anonymous
         TxGlobalAuth.subscribeJWT((response) => {
             const isAnonymous = TxGlobalAuth.isAuthenticatedAnonymous();
             const isL1 = TxGlobalAuth.isAuthenticatedUserAccount();
@@ -676,8 +739,12 @@ function onloadTxGlobalAuth() {
                 console.log('Authenticated: L2 (client level)');
             } else if (isL1) {
                 console.log('Authenticated: L1 (account level)');
-                const kratosId = TxGlobalAuth.getTokenProvider()?.getKratosId();
-                console.log('Kratos ID:', kratosId);
+                // Universal: works for both Kratos and AD
+                const person = response.session.person;
+                console.log('User:', person.name, person.lastname);
+                console.log('Person ID:', TxGlobalAuth.getTokenProvider()?.getPersonId());
+                // Kratos-specific (empty for AD):
+                // const kratosId = TxGlobalAuth.getTokenProvider()?.getKratosId();
             } else if (isAnonymous) {
                 console.log('Anonymous device session');
             } else {
@@ -688,9 +755,10 @@ function onloadTxGlobalAuth() {
         });
 
         // Wire up login button
+        // For AD mode: replace authenticate() with authorize()
         document.getElementById('login-btn')?.addEventListener('click', async () => {
             try {
-                await TxGlobalAuth.authenticate();
+                await TxGlobalAuth.authenticate();  // or authorize() for AD
                 await TxGlobalAuth.requireAgreements();
             } catch (e) {
                 console.log('User dismissed the dialog');
@@ -701,6 +769,8 @@ function onloadTxGlobalAuth() {
     });
 }
 ```
+
+**Troubleshooting**: If `subscribeJWT` fires with `null` and `isAuthenticatedUserAccount()` returns `false` — the user is in **guest state** (not authenticated). This is not mode-specific. Verify: (1) `init()` completed successfully, (2) the `appName` is correct for the target environment, (3) the user has actually completed the authentication flow (`authenticate()` or `authorize()` resolved).
 
 ## Error Handling
 
