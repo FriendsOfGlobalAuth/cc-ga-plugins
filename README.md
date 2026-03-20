@@ -15,17 +15,9 @@ This repository also serves as the marketplace (`ga-claude-code-marketplace`).
 
 ### Claude Code
 
-Via marketplace (recommended):
-
 ```bash
 claude plugin marketplace add FriendsOfGlobalAuth/cc-ga-plugins
 claude plugin install global-auth@ga-claude-code-marketplace --scope user
-```
-
-Direct install:
-
-```bash
-claude plugin install global-auth --scope user
 ```
 
 ### Qwen Code
