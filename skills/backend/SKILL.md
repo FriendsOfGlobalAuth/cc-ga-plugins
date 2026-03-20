@@ -152,7 +152,7 @@ Multiple L1 provider names exist depending on product configuration and region. 
 - `userType` — `"COMMON_USER_TYPE"` for regular clients
 - `firms` — EDOX firm associations (trading accounts)
 - `authenticationId`, `crmId`, `edoxVerified` — trading/client account metadata
-- L2 providers require 2FA — `scontext.provider.tfaRequired` is a **provider-level configuration flag** meaning "this provider requires 2FA". It is not a token state. If you receive a valid L2 token, 2FA has already been completed — the widget does not issue L2 tokens until 2FA passes.
+- L2 providers require 2FA — `scontext.provider.tfaRequired` is a **provider-level configuration flag** meaning "this provider requires 2FA". It is not a token state. If you receive a valid L2 token, 2FA has already been completed — the widget does not issue L2 tokens until 2FA passes. See **"Determining 2FA Status from the JWT"** section below for how to programmatically check 2FA completion on the backend.
 
 Multiple L2 provider names exist depending on product and region. All share the same session structure.
 
@@ -171,6 +171,29 @@ Multiple L2 provider names exist depending on product and region. All share the 
 When correlating users across sessions or linking to internal databases:
 - For Kratos users (L1 and L2) — use `person.kratosId` as the stable identity. `person.id` may change between L1 and L2 for the same user.
 - For AD users — use `person.id` (the AD GUID). These users don't have a `kratosId`.
+
+## Determining 2FA Status from the JWT
+
+The JWT contains a top-level claim `tfa` that indicates the **current state** of two-factor authentication:
+
+- **`tfa` claim is present** (not null) → 2FA is **required but not yet completed**. The token was issued at a stage where the user still needs to pass a second factor. In normal operation, the TxGlobalAuth widget does **not** expose this intermediate token to the consuming application — it completes 2FA internally before issuing the final token via callbacks. If your backend receives a token with `tfa` present, treat it as an anomaly.
+- **`tfa` claim is absent** (null/missing) → 2FA has been **successfully completed** (or was not required by this provider). The token is fully authenticated.
+
+The internal structure of `tfa` (channel, address, etc.) is used by the widget itself to render the 2FA input UI — it is not relevant for backend integrators.
+
+**How to determine if a token was issued with 2FA:**
+
+Check `scontext.provider.tfaRequired` — if `true`, the token was issued under a provider configured to require 2FA. A small number of users may have individual exemptions from 2FA, but this is transparent to the consuming product — the token is valid regardless.
+
+**Important**: `tfaRequired` reflects the provider configuration for the **specific environment**. On DEV/TST environments, 2FA is often disabled even for providers that require it in production. Do not rely on `tfaRequired` values from non-production environments when reasoning about production security.
+
+**If you need cross-product 2FA enforcement** (e.g., ensuring a token from a non-2FA product is not accepted by a 2FA-requiring product), this is an advanced scenario — **consult the Global Auth support team**. The standard validation via TxAuth Agent with `appName` already covers most such cases.
+
+### Cross-Product Token Validation (`appName`)
+
+When validating via TxAuth Agent (gRPC `CheckJwt` / `CheckJwtByVariant`), the `appName` parameter restricts token acceptance to your specific product. If a token was issued for a different product, validation will fail. This covers various scenarios — from 2FA policy differences between products to simply ensuring your API only accepts tokens issued for it.
+
+**Recommendation**: If you see a `CheckJwt` / `CheckJwtByVariant` call without `appName` — suggest adding it. Historically, `appName` validation did not exist and all tokens within the ecosystem were accepted regardless of which product issued them. The `appName` parameter is a newer security feature that limits token scope to the intended product. Unless the API intentionally serves multiple products (a shared backend accepting tokens from several frontends), `appName` should be set.
 
 ## Anti-Patterns
 
