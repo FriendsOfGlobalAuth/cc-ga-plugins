@@ -2,7 +2,7 @@
 
 Global Auth (TxGlobalAuth) integration skills for Claude Code and Qwen Code.
 
-Part of [ga-claude-code-marketplace](https://github.com/FriendsOfGlobalAuth/claude-code-marketplace).
+This repository also serves as the marketplace (`ga-claude-code-marketplace`).
 
 ## Available Skills
 
@@ -18,7 +18,7 @@ Part of [ga-claude-code-marketplace](https://github.com/FriendsOfGlobalAuth/clau
 Via marketplace (recommended):
 
 ```bash
-claude plugin marketplace add FriendsOfGlobalAuth/claude-code-marketplace
+claude plugin marketplace add FriendsOfGlobalAuth/cc-ga-plugins
 claude plugin install global-auth@ga-claude-code-marketplace --scope user
 ```
 
@@ -71,6 +71,7 @@ when navigating to dashboard.example.com.
 ```
 cc-ga-plugins/
 ├── .claude-plugin/
+│   ├── marketplace.json     # Marketplace registry
 │   └── plugin.json          # Claude Code manifest
 ├── qwen-extension.json      # Qwen Code manifest
 ├── CLAUDE.md                # Claude Code context

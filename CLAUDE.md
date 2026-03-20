@@ -4,7 +4,7 @@
 
 This repository contains Claude Code plugins for Global Auth (TxGlobalAuth) — a proprietary authentication widget deployed across multiple products and companies.
 
-Part of [ga-claude-code-marketplace](https://github.com/FriendsOfGlobalAuth/claude-code-marketplace) (`FriendsOfGlobalAuth/claude-code-marketplace`).
+This repository also serves as the marketplace (`ga-claude-code-marketplace`). GitHub source: `FriendsOfGlobalAuth/cc-ga-plugins`.
 
 ## Language
 
@@ -12,6 +12,7 @@ Official language: **English**.
 
 ## Structure
 
+- `.claude-plugin/marketplace.json` — Marketplace registry (plugin catalog)
 - `.claude-plugin/plugin.json` — Claude Code plugin manifest
 - `qwen-extension.json` — Qwen Code extension manifest
 - `QWEN.md` — Qwen Code context file
@@ -29,15 +30,15 @@ GitHub source: `FriendsOfGlobalAuth/cc-ga-plugins`.
 1. Create `skills/{skill-name}/SKILL.md`
 2. Include YAML frontmatter: `name`, `description`
 3. Update README.md skills table
-4. Bump version in `.claude-plugin/plugin.json` and `qwen-extension.json`
-5. Update marketplace: add skill reference to `marketplace.json` in `FriendsOfGlobalAuth/claude-code-marketplace`
+4. Bump version in `.claude-plugin/plugin.json`, `qwen-extension.json`, and `.claude-plugin/marketplace.json` (both top-level and plugin entry)
+5. Update marketplace plugin entry in `.claude-plugin/marketplace.json` if skill name or description changed
 
 ## Updating Skills
 
 1. Edit `skills/{skill-name}/SKILL.md`
 2. Preserve YAML frontmatter structure
-3. Bump patch version in `.claude-plugin/plugin.json` and `qwen-extension.json`
-4. If skill name or description changed — update README.md skills table and marketplace description
+3. Bump patch version in `.claude-plugin/plugin.json`, `qwen-extension.json`, and `.claude-plugin/marketplace.json` (both top-level and plugin entry)
+4. If skill name or description changed — update README.md skills table and marketplace plugin entry in `.claude-plugin/marketplace.json`
 
 ## Skill Description Quality
 
