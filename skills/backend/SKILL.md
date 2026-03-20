@@ -14,6 +14,8 @@ This skill covers backend integration with TxGlobalAuth — specifically JWT tok
 - `txauth/common/session/session.pb.go` — Session, EdoxFirm, UserType (source: `proto/txauth/common/session/session.proto`)
 - `txauth/common/provider/provider.pb.go` — AuthSource, AuthProvider (source: `proto/txauth/common/provider/provider.proto`)
 
+**Proto file for TxAuth JwtAgent integration**: The proto definition for `txAuth.JwtAgent` service is located in the corporate Bitbucket repository at `projects/SER/repos/proto-repo/browse/grpc-txauth/src/main/proto/grpc/txauth/jwt_agent.proto`. Use this proto file to generate gRPC client stubs for token validation via the TxAuth agent.
+
 ## Token Validation — Required
 
 **Every backend that receives a TxGlobalAuth JWT must validate it.** Never trust a token without validation — the frontend is an untrusted environment.
