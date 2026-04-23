@@ -20,21 +20,114 @@ This skill covers backend integration with TxGlobalAuth — specifically JWT tok
 
 **Every backend that receives a TxGlobalAuth JWT must validate it.** Never trust a token without validation — the frontend is an untrusted environment.
 
-There are two approaches to validation:
+There are two approaches to validation. **The choice depends on network topology, not programming language:**
 
-### Approach 1: TxAuth Agent (Token Introspection)
+- **Inside the network perimeter** (backend has network access to TxAuth server) → use Approach 1 (gRPC). The TxAuth agent runs on each backend instance for minimal latency. **Always prefer this when available.**
+- **Outside the network perimeter** (backend cannot reach TxAuth server) → use Approach 2 (HTTP). This is the only option for externally hosted backends.
 
-Send the token to the TxAuth agent service for validation and session data extraction.
+### Approach 1: TxAuth Agent (gRPC Token Introspection)
 
-*Technical details: TBD — consult your infrastructure team for the agent endpoint URL and request format.*
+Call the TxAuth agent service directly via gRPC. This is the lowest-level validation method — Approach 2 (HTTP) is actually a wrapper around this.
 
-### Approach 2: Kratos JWT Introspection
+**gRPC service**: `grpc.txauth.JwtAgent`
+**RPC method**: `Check`
 
-Validate the token through the Kratos JWT introspection endpoint.
+**Request** (`JwtRequest`):
+```protobuf
+message JwtRequest {
+    string token = 1;  // The JWT string from the frontend
+}
+```
 
-*Technical details: TBD — consult your infrastructure team for the endpoint and required headers.*
+**Response** (`JwtResponse`):
+```protobuf
+message JwtResponse {
+    google.rpc.Status status = 1;              // Status code 0 = success
+    session.Session session = 2;               // Decoded session with person data
+    session.SessionContext context = 3;         // Session context (provider config, token metadata)
+    provider.AuthProvider provider = 4;         // Authentication provider info
+}
+```
 
-Both approaches validate the token signature and expiration, and return the decoded session data including `person`.
+The `session.Session` contains the `person` field with the same structure described in "Session Structure by Token Type" below.
+
+**Service discovery**: TxAuth agents are typically registered in Consul. The service name and datacenter are configured per variant (e.g., `dev-glaue1-txauth-agent` in datacenter `dc-dev`). Consult your infrastructure team for the service name for your environment.
+
+**Deployment model**: The TxAuth agent is designed to run **on each backend instance** (sidecar or co-located process) for minimal latency. The agent connects to the TxAuth server and caches validation results. This is why gRPC is preferred inside the perimeter — calls to the local agent are sub-millisecond.
+
+**Authentication**: No bearer tokens — gRPC calls to the TxAuth agent rely on network-level isolation (internal network, Consul datacenter). The agent is not exposed to the public internet.
+
+**Variants**: TxAuth supports multiple variants (e.g., `finam`, `lime`) — different TxAuth deployments for different product families. Use `CheckJwtByVariant(token, variant)` to validate against a specific variant, or `CheckJwt(token)` to check all configured variants.
+
+**When to use**: When your backend is **inside the network perimeter** with access to the TxAuth server/agent infrastructure. This works for any language with gRPC support (Go, Java, Node.js, Python, etc.) — generate client stubs from the proto file. This approach supports `appName`-based cross-product token restriction (see "Cross-Product Token Validation" below).
+
+**Proto source**: The proto definition is in the corporate Bitbucket repository at `projects/SER/repos/proto-repo/browse/grpc-txauth/src/main/proto/grpc/txauth/jwt_agent.proto`. Generate gRPC client stubs from this file for your language.
+
+### Approach 2: Kratos JWT Introspection (HTTP)
+
+Validate the token through the Kratos HTTP introspection endpoint. Use this when the backend is **outside the network perimeter** and cannot reach the TxAuth agent directly.
+
+> **Architecture note**: The HTTP `/api/jwt/introspect` endpoint is hosted by Kratos itself and internally calls the gRPC TxAuth agent (Approach 1). It abstracts away service discovery, Consul, and gRPC transport — at the cost of higher latency compared to a local agent.
+
+**Endpoint**: `POST https://ga.{domain}/api/jwt/introspect`
+
+Production URLs by CDN region:
+- CIS: `https://ga.finam.ru/api/jwt/introspect`
+- International: `https://ga.lime.co/api/jwt/introspect`
+
+Ask your infrastructure team which base URL to use — it must match the environment where the frontend widget is configured.
+
+**Request**:
+```http
+POST /api/jwt/introspect HTTP/1.1
+Content-Type: application/json
+Accept: application/json
+Authorization: Bearer {SERVICE_TOKEN}
+
+{ "token": "<JWT string from frontend>" }
+```
+
+- `SERVICE_TOKEN` — a server-to-server (S2S) token that authenticates your backend to the introspection service. Obtain it from your infrastructure/DevOps team. Store it as a secret (environment variable, vault) — never commit to source control.
+
+**Response** (success):
+```json
+{
+    "active": true,
+    "person": {
+        "id": "55ca4536-...",
+        "kratos_id": "e9b9aba4-...",
+        "name": "John",
+        "lastname": "Doe",
+        "email": "jdoe@example.com",
+        "login": "jdoe"
+    }
+}
+```
+
+> **Naming convention difference**: The introspection endpoint returns `kratos_id` (snake_case). The frontend widget's `session.person` uses `kratosId` (camelCase). These are the same value — just different naming conventions between the HTTP API and the JavaScript widget.
+
+**Response** (invalid/expired token):
+```json
+{
+    "active": false
+}
+```
+
+**Validation logic**:
+1. Check HTTP status — non-2xx means introspection service is unreachable
+2. Check `active === true` — if `false` or missing, reject the token
+3. Check `person` object exists — if missing, reject
+4. Extract identity from `person` (see "person.id Semantics" below)
+
+**Error handling**: Set a reasonable timeout (5–10 seconds). If the introspection service is down, fail closed (reject the request) — do not fall back to local JWT parsing.
+
+**Environment variables** (typical naming):
+```
+GA_INTROSPECT_URL=https://ga.lime.co/api/jwt/introspect
+GA_SERVICE_TOKEN=<obtain from infrastructure team>
+```
+
+Both approaches validate the token signature and expiration, decompress the `sess` field, and return the decoded session data including `person`. The difference is network topology: gRPC (Approach 1) for backends inside the perimeter with TxAuth agent access, HTTP (Approach 2) for backends outside the perimeter.
 
 ## JWT Structure — What the Token Actually Contains
 
@@ -166,7 +259,7 @@ Multiple L2 provider names exist depending on product and region. All share the 
 | Kratos L1 | = kratosId (same value) | Kratos UUID |
 | Kratos L2 | Trading/client account ID | Kratos UUID |
 
-**`person.kratosId` is the stable user identity** across authentication levels. Think of it as the primary identity — everyone who authenticates through Kratos gets one. `person.id` in L2 is a secondary identifier (trading account) that the user acquires when they become a client. For AD users, `person.id` (AD GUID) is the only identifier since they exist outside the Kratos identity system.
+**`person.kratosId` (camelCase in decoded token / `kratos_id` snake_case in introspection API response) is the stable user identity** across authentication levels. Think of it as the primary identity — everyone who authenticates through Kratos gets one. `person.id` in L2 is a secondary identifier (trading account) that the user acquires when they become a client. For AD users, `person.id` (AD GUID) is the only identifier since they exist outside the Kratos identity system.
 
 When correlating users across sessions or linking to internal databases:
 - For Kratos users (L1 and L2) — use `person.kratosId` as the stable identity. `person.id` may change between L1 and L2 for the same user.
@@ -233,6 +326,74 @@ Use whoami only as a supplementary check, not as the primary source of user data
 ### Do NOT Skip Validation for "Trusted" Frontends
 
 Even in internal enterprise applications, always validate the JWT. The token arrives from the browser — it can be tampered with, replayed, or expired. Validation is not optional.
+
+## Common Integration Pattern: Token Exchange
+
+The standard pattern for integrating TxGlobalAuth with a backend is **token exchange** — the frontend sends the GA token, the backend validates it, extracts user data, and issues its own session (e.g., an internal JWT or a server-side session).
+
+### Flow
+
+```
+Frontend                          Backend                         TxAuth Agent
+   │                                │                                │
+   │  POST /api/auth/login          │                                │
+   │  { token: "ga-jwt-string" }    │                                │
+   │ ──────────────────────────────>│                                │
+   │                                │  Validate GA token             │
+   │                                │ ──────────────────────────────>│
+   │                                │  { active: true, person: {...}}│
+   │                                │ <──────────────────────────────│
+   │                                │                                │
+   │                                │  Extract person.id, person.login, etc.
+   │                                │  Find or create internal user
+   │                                │  Issue internal session/JWT
+   │                                │                                │
+   │  { internalToken: "...",       │                                │
+   │    user: { id, name, ... } }   │                                │
+   │ <──────────────────────────────│                                │
+```
+
+### Backend Pseudocode (framework-agnostic)
+
+```
+function handleLogin(request):
+    gaToken = request.body.token
+    if not gaToken:
+        return 401 "Missing token"
+
+    // Step 1: Validate GA token via introspection
+    introspectionResult = validateGAToken(gaToken)  // see Approach 1 or 2 above
+    if not introspectionResult.active:
+        return 401 "Invalid or expired token"
+
+    // Step 2: Extract identity
+    person = introspectionResult.person
+    // For Kratos users: person.kratos_id is the stable identity
+    // For AD users: person.id (AD GUID) is the identity
+    // Note: introspection API uses snake_case (kratos_id), not camelCase (kratosId)
+    stableId = person.kratos_id ?? person.id
+
+    // Step 3: Find or create internal user
+    internalUser = findUserByExternalId(stableId)
+    if not internalUser:
+        internalUser = createUser({
+            externalId: stableId,
+            email: person.email,
+            name: person.name,
+            login: person.login
+        })
+
+    // Step 4: Issue internal session
+    internalToken = issueJWT({ userId: internalUser.id, ... })
+    return { token: internalToken, user: internalUser }
+```
+
+### Key Points
+
+- **The frontend never stores or forwards the raw GA token for subsequent API calls** — after the exchange, it uses the internal token issued by your backend.
+- **The exchange endpoint is the only place** where the GA token is validated. All other backend endpoints validate the internal token using your own middleware.
+- **User matching**: Use `person.kratosId` (Kratos) or `person.id` (AD) as the external identity key. See "person.id Semantics" above.
+- **Do not skip the exchange**: Passing the raw GA token to every API call and validating it every time is inefficient and couples your entire backend to the TxAuth introspection service.
 
 ## Receiving Data from the Frontend
 

@@ -48,7 +48,62 @@ Note: `isAuthenticatedUserAccount()` returns `true` for both Kratos L1 and AD-au
 
 > **Anti-pattern**: Do not split auth state management between `subscribeJWT` (for login) and `subscribeGlobal('logout')` (for logout). This leads to stale UI when logout happens externally (other tab, console, session expiry). `subscribeJWT` already covers logout — the callback fires with `null`.
 
-**2. Progressive requirement chains**: For actions that require a specific auth level, build a chain of `authenticate()` → `require*()` calls in the action handler. Every method in the chain is idempotent — if the requirement is already met, it resolves instantly. For example, a "Post comment" button handler should call `authenticate()` → `requireAgreements()` → `requireEmail()` → then submit the comment with the JWT token. This way, guests get the full onboarding flow, while authenticated users skip straight to submission.
+**2. Existing app migration — logout is the #1 integration mistake**: When integrating TxGlobalAuth into an existing application, find **every place** where the app currently clears auth state on logout (clearing cookies, localStorage, resetting stores, redirecting) and replace them with `TxGlobalAuth.logout()`. The old direct-cleanup approach breaks cross-tab logout, external session management, and the reactive `subscribeJWT` architecture. If you leave the old logout handlers alongside TxGlobalAuth, the app will have two competing logout mechanisms and the UI will get out of sync.
+
+## Recommended Integration Architecture
+
+The methods described below are individual building blocks. This section shows how to assemble them into a working integration. **Read this first** — it prevents the most common architectural mistakes.
+
+### Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  ROOT LEVEL — Global Auth Provider (persists across pages)  │
+│                                                             │
+│  1. Load CDN script                                         │
+│  2. TxGlobalAuth.init({ env, appName })                     │
+│  3. subscribeJWT(callback) — THE ONLY place that reads      │
+│     and updates auth state in your app                      │
+└─────────────────────┬───────────────────────────────────────┘
+                      │ auth state flows DOWN reactively
+          ┌───────────┴───────────┐
+          ▼                       ▼
+┌──────────────────┐   ┌──────────────────────┐
+│    LOGIN PAGE    │   │   LOGOUT BUTTON      │
+│                  │   │                      │
+│ Calls only:      │   │ Calls only:          │
+│ authenticate()   │   │ TxGlobalAuth.logout()│
+│ or authorize()   │   │                      │
+│                  │   │ Does NOT clear state  │
+│ Does NOT update  │   │ directly — state      │
+│ app state — the  │   │ clears reactively     │
+│ subscribeJWT     │   │ when subscribeJWT     │
+│ callback in the  │   │ fires with null       │
+│ provider handles │   │                      │
+│ everything       │   │                      │
+└──────────────────┘   └──────────────────────┘
+```
+
+**Key rule**: Auth state flows in one direction — from `subscribeJWT` callback down to the rest of the app. Login and logout buttons only trigger widget methods; they never touch app state directly.
+
+### Why This Architecture
+
+- **subscribeJWT at root level** survives page navigation. If placed on the login page, the subscription dies when the user navigates away.
+- **Logout via `TxGlobalAuth.logout()` only** ensures that cross-tab logout, console logout, and server-side session revocation all work — they all flow through `subscribeJWT(null)`.
+- **Login page has no state logic** because `subscribeJWT` already fires when `authenticate()`/`authorize()` completes — duplicating the state update creates race conditions.
+
+### Common Migration Mistake
+
+When integrating into an **existing** application that already has authentication:
+
+1. **Find all existing logout handlers** — search for cookie clearing, localStorage removal, store resets, redirect-on-logout logic
+2. **Replace them** with `TxGlobalAuth.logout()` — the reactive cleanup happens via `subscribeJWT(null)`
+3. **Move auth state initialization** to the root-level `subscribeJWT` callback — not the login page
+4. **Remove any direct state manipulation** from login/logout button handlers
+
+If you skip step 1-2, the app will have two logout mechanisms that conflict with each other.
+
+**3. Progressive requirement chains**: For actions that require a specific auth level, build a chain of `authenticate()` → `require*()` calls in the action handler. Every method in the chain is idempotent — if the requirement is already met, it resolves instantly. For example, a "Post comment" button handler should call `authenticate()` → `requireAgreements()` → `requireEmail()` → then submit the comment with the JWT token. This way, guests get the full onboarding flow, while authenticated users skip straight to submission.
 
 ## Script Loading
 
@@ -302,6 +357,51 @@ useEffect(() => {
 }, []);
 ```
 
+### subscribeJWT Handler — Required Cases
+
+The callback fires in several distinct scenarios. Your handler must distinguish between them:
+
+| Callback receives | Current app state | What happened | Required action |
+|---|---|---|---|
+| `response` (token) | Not authenticated | **First login** | Exchange token with backend, set user session |
+| `response` (token) | Authenticated, same `person.id` | **Token refresh** | Update stored token if needed, no session change |
+| `response` (token) | Authenticated, different `person.id` | **Account switch** | Clear current session, exchange new token with backend |
+| `null` | Authenticated | **Session lost** (logout, expiry, revocation) | Clear local session, redirect to login |
+| `null` | Not authenticated | **Already logged out** | No action needed |
+| `response` (token, immediate on subscription) | Authenticated | **Page reload / re-mount** | Sync identity tracker with token, no backend exchange needed |
+
+**Identity tracking**: To distinguish "token refresh" from "account switch", compare `person.id` from the new token against the `person.id` you stored from the previous session. Use `person.id` (UUID, immutable within a session) — not `person.login` or `person.email`, which may be absent for some providers. See `PersonData` type below and the `global-auth:backend` skill for `person.id` semantics across provider types.
+
+**React implementation sketch** (extends the basic example above):
+
+```javascript
+const personIdRef = useRef(null);
+
+useEffect(() => {
+    const unsub = TxGlobalAuth.subscribeJWT((response) => {
+        if (response) {
+            const newPersonId = response.session.person.id;
+            if (!personIdRef.current) {
+                // First login or page reload — exchange token with backend
+                personIdRef.current = newPersonId;
+                exchangeToken(response.token);
+            } else if (personIdRef.current !== newPersonId) {
+                // Account switch — clear old session, exchange new token
+                personIdRef.current = newPersonId;
+                clearSession();
+                exchangeToken(response.token);
+            }
+            // else: token refresh — same person, update token only if stored
+        } else {
+            // Session lost — clear everything
+            personIdRef.current = null;
+            clearSession();
+        }
+    });
+    return () => unsub();
+}, []);
+```
+
 ### Token Provider
 ```javascript
 const tp = TxGlobalAuth.getTokenProvider();
@@ -350,6 +450,8 @@ For AD-type providers (`AD_OFFICE`, `AD_OFFICE_OTP`, `AD_OFFICE_SMS`, `AD_WTE`, 
 | `gender` | `number` | Gender |
 
 `session.userType` is `"EMPLOYEE_USER_TYPE"` for AD-authenticated users.
+
+**Identity tracking field**: Use `person.id` to track which user is currently authenticated in your app (e.g., to detect account switches in `subscribeJWT`). Do not use `person.login` or `person.email` — these may be absent for some provider types (e.g., Kratos L1 may not have `login`). `person.id` is always present and immutable within a session. For details on how `person.id` semantics differ across providers, see the `global-auth:backend` skill — section "person.id Semantics".
 
 **AD provider variants**:
 - `AD_OFFICE` — standard AD authentication (username + password)
@@ -580,12 +682,12 @@ interface Session {
 }
 
 interface PersonData {
-    id: string;           // User GUID — semantics vary by provider (see backend skill)
+    id: string;           // USE THIS for identity tracking — UUID, immutable within a session
     name?: string;        // First name (may be absent for Kratos L1)
     lastname?: string;    // Last name (may be absent for Kratos L1)
     middlename?: string;  // Patronymic (AD-specific, may be absent)
-    email?: string;       // Email
-    login?: string;       // AD sAMAccountName or Kratos login (may be absent for Kratos L1)
+    email?: string;       // Email — do NOT use for identity comparison
+    login?: string;       // AD sAMAccountName or Kratos login — do NOT use for identity comparison
     verifiedPhone?: string; // Phone (may be absent)
     gender?: number;
     kratosId?: string;    // Present for Kratos providers, absent for AD
