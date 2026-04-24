@@ -1,6 +1,6 @@
 ---
 name: backend
-description: "TxGlobalAuth (GlobalAuth, GA) backend integration. Use when validating TxGlobalAuth JWT tokens on the server, decoding session/person data, building auth verify endpoints, or working with Kratos token introspection in Node.js, NestJS, Express, Go, or any backend."
+description: "TxGlobalAuth (GlobalAuth, GA) backend integration. Use when validating TxGlobalAuth JWT tokens via TxAuth Agent (gRPC) or HTTP introspect, decoding session/person data, deploying TxAuth agent, setting up gRPC token validation, building auth verify endpoints, or working with Kratos token introspection in Go, PHP, Node.js, NestJS, Express, Java, Python, or any backend."
 ---
 
 # Global Auth - Backend Integration Skill
@@ -20,10 +20,10 @@ This skill covers backend integration with TxGlobalAuth — specifically JWT tok
 
 **Every backend that receives a TxGlobalAuth JWT must validate it.** Never trust a token without validation — the frontend is an untrusted environment.
 
-There are two approaches to validation. **The choice depends on network topology, not programming language:**
+There are two approaches to validation. **Always prefer Approach 1 (TxAuth Agent via gRPC)** — Approach 2 (HTTP) exists only for backends that physically cannot reach TxAuth infrastructure:
 
-- **Inside the network perimeter** (backend has network access to TxAuth server) → use Approach 1 (gRPC). The TxAuth agent runs on each backend instance for minimal latency. **Always prefer this when available.**
-- **Outside the network perimeter** (backend cannot reach TxAuth server) → use Approach 2 (HTTP). This is the only option for externally hosted backends.
+- **Inside the network perimeter** → **Approach 1 (gRPC) is the standard.** Each project deploys its own TxAuth agent instance(s) — a local sidecar that validates tokens with sub-millisecond latency and zero external HTTP calls. If your backend is inside the perimeter and uses HTTP introspect, this should be migrated to TxAuth Agent.
+- **Outside the network perimeter** (no network path to TxAuth infrastructure) → Approach 2 (HTTP). This is the **only** valid reason to use HTTP introspect.
 
 ### Approach 1: TxAuth Agent (gRPC Token Introspection)
 
@@ -35,7 +35,8 @@ Call the TxAuth agent service directly via gRPC. This is the lowest-level valida
 **Request** (`JwtRequest`):
 ```protobuf
 message JwtRequest {
-    string token = 1;  // The JWT string from the frontend
+    string token = 1;              // The JWT string from the frontend
+    string expected_app_name = 2;  // Optional: restrict to specific product (see "Cross-Product Token Validation")
 }
 ```
 
@@ -51,17 +52,132 @@ message JwtResponse {
 
 The `session.Session` contains the `person` field with the same structure described in "Session Structure by Token Type" below.
 
-**Service discovery**: TxAuth agents are typically registered in Consul. The service name and datacenter are configured per variant (e.g., `dev-glaue1-txauth-agent` in datacenter `dc-dev`). Consult your infrastructure team for the service name for your environment.
+**Deployment model**: There is **no communal/shared TxAuth agent**. Each project must deploy its own agent instance(s). The agent runs as a local sidecar or co-located process on each backend instance. It connects upstream to the TxAuth server, caches validation results, and provides sub-millisecond local validation. This is why gRPC is the standard inside the perimeter — calls to the local agent have near-zero latency.
 
-**Deployment model**: The TxAuth agent is designed to run **on each backend instance** (sidecar or co-located process) for minimal latency. The agent connects to the TxAuth server and caches validation results. This is why gRPC is preferred inside the perimeter — calls to the local agent are sub-millisecond.
+**How to get your own TxAuth agent deployed:**
+1. **Submit a support ticket** to the technical department to provision TxAuth agent instances for your project
+2. **Deploy a Consul agent** alongside your TxAuth agents — the TxAuth agent **must** register itself in Consul (this is an architecture requirement from the TxAuth Server team, used for agent monitoring). You will need a Consul token for registration.
+3. **Configure your backend** to connect to your local agent's gRPC endpoint (typically `localhost:<port>` or a sidecar address within your deployment)
 
-**Authentication**: No bearer tokens — gRPC calls to the TxAuth agent rely on network-level isolation (internal network, Consul datacenter). The agent is not exposed to the public internet.
+> **This is an infrastructure process, not just code.** Plan for agent provisioning early in the project timeline. The code integration is straightforward once agents are deployed — see "Integration Setup" below.
 
-**Variants**: TxAuth supports multiple variants (e.g., `finam`, `lime`) — different TxAuth deployments for different product families. Use `CheckJwtByVariant(token, variant)` to validate against a specific variant, or `CheckJwt(token)` to check all configured variants.
+> For background reading: internal wiki pages on "TXAuth Agent (Linux)" cover agent installation details.
 
-**When to use**: When your backend is **inside the network perimeter** with access to the TxAuth server/agent infrastructure. This works for any language with gRPC support (Go, Java, Node.js, Python, etc.) — generate client stubs from the proto file. This approach supports `appName`-based cross-product token restriction (see "Cross-Product Token Validation" below).
+**Service discovery**: TxAuth agents register in Consul for monitoring purposes. To browse currently running agents: open Consul UI at `https://consul.entapp.work/ui/` → select the datacenter for your environment → search for `*-txauth-agent` (e.g., `prd-*-txauth-agent` for production, `dev-*` for development).
+
+**Authentication**: No bearer tokens required for gRPC calls — the TxAuth agent relies on network-level isolation (internal network, Consul datacenter). The agent is not exposed to the public internet.
+
+**Variants**: TxAuth supports multiple variants (`spc`, `mma`, `finam`) — different TxAuth server deployments for different product families. The variant determines which upstream TxAuth server the agent connects to. When deploying your agent, specify the correct `-dc` (datacenter) and `-remote-service` for your variant and environment (see table below). In PHP, wrapper libraries provide convenience methods: `CheckJwtByVariant(token, variant)` to validate against a specific variant, or `CheckJwt(token)` to check all configured variants. For the raw gRPC API, the variant is determined by which agent instance you connect to — each agent is configured for a specific variant/environment.
+
+**When to use**: When your backend is **inside the network perimeter**. This works for any language with gRPC support (Go, Java, Node.js, Python, PHP, etc.) — generate client stubs from the proto file or use existing libraries. This approach supports `appName`-based cross-product token restriction via the `expected_app_name` field (see "Cross-Product Token Validation" below).
 
 **Proto source**: The proto definition is in the corporate Bitbucket repository at `projects/SER/repos/proto-repo/browse/grpc-txauth/src/main/proto/grpc/txauth/jwt_agent.proto`. Generate gRPC client stubs from this file for your language.
+
+#### Environment and Variant Reference
+
+The table below is a **reference snapshot** (as of April 2026) — datacenter and remote-service values may change over time. Verify with the Tx Auth team or Consul UI before configuring a new deployment.
+
+| Environment | TxGlobalAuth `env` | Variant | Datacenter (`-dc`) | Remote Service (`-remote-service`) |
+|---|---|---|---|---|
+| DEV, TST | `dev` / `tst` | `spc`, `mma`, `finam` | `dc-dev` | `dev-ftcore-txauth-server` |
+| PrePROD (UAT) | `uat` | `spc` | `dc-pp` | `pp-ftr03-txauth-server` |
+| PrePROD (UAT) | `uat` | `finam` | `dc-pp` | `pp-ftr01-txauth-server` |
+| PrePROD (UAT) | `uat` | `mma` | `dc-dev` | `dev-ftcore-txauth-server` |
+| PROD | `prod` | `spc` | `dc-ny` | `prd-ftrr03-txauth-server` |
+| PROD | `prod` | `finam` | `dc-tt` | `prd-ftrr01-txauth-server` |
+| PROD | `prod` | `mma` | `dc-fr` | `prd-ftrr02-txauth-server` |
+
+> **Note**: The `mma` variant in PrePROD (UAT) uses the DEV TxAuth server — there is no dedicated UAT instance for this variant.
+
+> **Tip**: To find currently running agents in Consul UI (`https://consul.entapp.work/ui/`), select the datacenter from the table above and search for `*-txauth-agent`.
+
+#### Integration Setup
+
+Proto modules with generated gRPC client stubs are published as **zip archives in the corporate Artifactory**. There is currently no package manager integration (no `go get`, no `npm install`) — download, unpack, and configure locally. The exact Artifactory URL depends on the team's infrastructure region — ask the Tx Auth team or check your project's existing Artifactory configuration.
+
+**Go integration** (reference example):
+
+1. Download and unpack proto modules. The artifact to look for is `grpc-txauth-golang-{VERSION}-golang.zip` in Artifactory. The version (e.g. `3.0.4190` as of April 2026) will change over time — check Artifactory for the latest available version.
+```bash
+# Example — adjust PROTO_URL to your Artifactory instance and latest version
+PROTO_VERSION="3.0.4190"
+PROTO_URL="https://<your-artifactory>/path/to/grpc-txauth-golang/${PROTO_VERSION}/grpc-txauth-golang-${PROTO_VERSION}-golang.zip"
+
+mkdir -p modules
+curl -s "$PROTO_URL" --output protos.zip
+unzip -o protos.zip -d modules/
+rm protos.zip
+```
+
+2. Configure `go.mod` with replace directives pointing to local modules:
+```go
+replace grpc => ./modules/grpc
+replace proto => ./modules/proto
+
+require (
+    google.golang.org/grpc v1.58.3
+    google.golang.org/protobuf v1.31.0
+)
+```
+
+3. Create gRPC client and call `Check`:
+```go
+import (
+    "context"
+    "google.golang.org/grpc"
+    "google.golang.org/grpc/credentials/insecure"
+    agent "grpc/txauth/agent"
+)
+
+func ValidateToken(ctx context.Context, agentAddr, jwt string) (*agent.JwtResponse, error) {
+    conn, err := grpc.NewClient(agentAddr,
+        grpc.WithTransportCredentials(insecure.NewCredentials()),
+    )
+    if err != nil {
+        return nil, err
+    }
+    defer conn.Close()
+
+    client := agent.NewJwtAgentClient(conn)
+    return client.Check(ctx, &agent.JwtRequest{
+        Token:           jwt,
+        ExpectedAppName: "your-app-name",  // recommended — restricts to your product
+    })
+}
+```
+
+4. Validate the response:
+```go
+resp, err := ValidateToken(ctx, "localhost:4811", jwtToken)
+if err != nil {
+    // gRPC error — agent unreachable, network issue
+    return err
+}
+if resp.GetStatus() != nil && resp.GetStatus().Code != 0 {
+    // Token rejected — invalid, expired, or wrong appName
+    return fmt.Errorf("token rejected: %s", resp.GetStatus().Message)
+}
+
+// Token valid — extract session data
+person := resp.GetSession().GetPerson()
+userType := resp.GetSession().GetUserType()
+```
+
+The module directory structure after unpacking:
+```
+modules/
+├── grpc/txauth/
+│   └── agent/          # JwtAgent service stubs
+└── proto/
+    ├── common/
+    │   ├── account/    # Account message
+    │   └── person/     # Person message
+    └── txauth/common/
+        ├── session/    # Session, SessionContext
+        └── provider/   # AuthProvider
+```
+
+**Other languages** (PHP, Node.js, Java, Python, etc.): Some languages may have internal wrapper libraries available — check with the Tx Auth team for your stack. For any language with gRPC support, you can generate client stubs from the proto file (`jwt_agent.proto`) using the standard `protoc` compiler with language-specific plugins. The proto source is in the corporate Bitbucket at `projects/SER/repos/proto-repo/browse/grpc-txauth/src/main/proto/grpc/txauth/jwt_agent.proto`.
 
 ### Approach 2: Kratos JWT Introspection (HTTP)
 
@@ -339,9 +455,9 @@ Check `scontext.provider.tfaRequired` — if `true`, the token was issued under 
 
 ### Cross-Product Token Validation (`appName`)
 
-When validating via TxAuth Agent (gRPC `CheckJwt` / `CheckJwtByVariant`), the `appName` parameter restricts token acceptance to your specific product. If a token was issued for a different product, validation will fail. This covers various scenarios — from 2FA policy differences between products to simply ensuring your API only accepts tokens issued for it.
+When validating via TxAuth Agent, the `expected_app_name` field in `JwtRequest` (raw gRPC) or the `appName` parameter in PHP wrapper methods (`CheckJwt` / `CheckJwtByVariant`) restricts token acceptance to your specific product. If a token was issued for a different product, validation will fail. This covers various scenarios — from 2FA policy differences between products to simply ensuring your API only accepts tokens issued for it.
 
-**Recommendation**: If you see a `CheckJwt` / `CheckJwtByVariant` call without `appName` — suggest adding it. Historically, `appName` validation did not exist and all tokens within the ecosystem were accepted regardless of which product issued them. The `appName` parameter is a newer security feature that limits token scope to the intended product. Unless the API intentionally serves multiple products (a shared backend accepting tokens from several frontends), `appName` should be set.
+**Recommendation**: If you see a `Check` / `CheckJwt` / `CheckJwtByVariant` call without `expected_app_name` / `appName` — suggest adding it. Historically, this validation did not exist and all tokens within the ecosystem were accepted regardless of which product issued them. The `expected_app_name` parameter is a newer security feature that limits token scope to the intended product. Unless the API intentionally serves multiple products (a shared backend accepting tokens from several frontends), `expected_app_name` should be set.
 
 ## Anti-Patterns
 
@@ -398,6 +514,42 @@ This is an **internal Kratos endpoint** used by the TxGlobalAuth widget internal
 - Not designed for S2S calls — no service token authentication, no `appName` restriction
 
 **If you encounter direct calls to `/sessions/token` in existing code** (frontend or backend), this is typically a workaround for obtaining data (usually email) that isn't in the JWT for the product's provider type (see "Data Availability by Provider and Auth Level"). The correct backend approach: validate JWT via introspect → call Kratos S2S API (`get-identity`) for full user data.
+
+### Do NOT Use HTTP Introspect When Inside the Network Perimeter
+
+**Wrong**: Using Approach 2 (HTTP `POST /api/jwt/introspect`) from a backend that has network access to TxAuth infrastructure.
+
+HTTP introspect is itself a wrapper around the gRPC TxAuth agent — it adds an extra network hop through the Kratos HTTP gateway, introduces an external dependency, requires a `SERVICE_TOKEN`, and offers no additional validation capability over a local agent. If your backend is inside the perimeter, deploy your own TxAuth agent and use gRPC (Approach 1).
+
+**If you encounter HTTP introspect in existing code for a perimeter-internal backend**, flag it for migration to TxAuth Agent. The migration path: request agent deployment via support ticket → deploy agent + Consul agent → configure gRPC client → replace HTTP calls with gRPC `Check`.
+
+> **The only valid use of HTTP introspect**: backends hosted outside the corporate network perimeter that cannot reach TxAuth infrastructure at all (e.g., external cloud deployments without VPN).
+
+## Reviewing Existing Backend Integrations
+
+When reviewing or auditing an existing TxGlobalAuth backend integration, check for these issues in order of priority:
+
+1. **Validation approach**: Is the backend using TxAuth Agent (gRPC) or HTTP introspect?
+   - Inside the perimeter but using HTTP introspect → recommend migration to TxAuth Agent (see anti-pattern above)
+   - Outside the perimeter using HTTP introspect → correct, but verify `SERVICE_TOKEN` is properly stored as a secret (not hardcoded)
+
+2. **`expected_app_name` / `appName` usage**: Is the `Check` call passing `expected_app_name` (gRPC) or the equivalent `appName` parameter (PHP wrappers)?
+   - If absent → recommend adding it to restrict token scope to the specific product
+   - Exception: shared backends that intentionally serve multiple products from a single API
+
+3. **Token handling**: Is the code manually parsing/decoding the JWT?
+   - Any `jwt.decode()`, base64 decode, or gunzip on the token → flag as anti-pattern, replace with proper validation via TxAuth Agent or HTTP introspect
+
+4. **Identity key**: What field is used as the stable user identity?
+   - `person.id` used for Kratos users → recommend switching to `person.kratosId` (`kratos_id` in HTTP introspect response) for stability across L1/L2 transitions
+   - `person.id` used for AD users → correct (no `kratosId` available for AD)
+
+5. **Field assumptions**: Does the code assume `person.email`, `person.name`, or other fields are always present without checking?
+   - Check against the "Data Availability by Provider and Auth Level" table above
+   - If the product uses Kratos L1 — most `person` fields are absent in the token. Code must handle this or supplement with `get-identity`
+
+6. **Direct `/sessions/token` calls**: Is the code calling the internal Kratos endpoint directly?
+   - Flag for replacement with proper validation + `get-identity` if additional user data is needed
 
 ## Common Integration Pattern: Token Exchange
 
