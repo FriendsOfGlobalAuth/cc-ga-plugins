@@ -87,7 +87,7 @@ Authorization: Bearer {SERVICE_TOKEN}
 { "token": "<JWT string from frontend>" }
 ```
 
-- `SERVICE_TOKEN` — a server-to-server (S2S) token that authenticates your backend to the introspection service. Obtain it from your infrastructure/DevOps team. Store it as a secret (environment variable, vault) — never commit to source control.
+- `SERVICE_TOKEN` — a server-to-server (S2S) token that authenticates your backend. Each S2S method (introspect, get-identity, etc.) is a **separate privilege** — the token only grants access to methods explicitly approved for your product. To request a token or additional method access, submit a ticket to the **GA project** or contact the **Global Auth team**. Store the token as a secret (environment variable, vault) — never commit to source control.
 
 **Response** (success):
 ```json
@@ -124,10 +124,39 @@ Authorization: Bearer {SERVICE_TOKEN}
 **Environment variables** (typical naming):
 ```
 GA_INTROSPECT_URL=https://ga.lime.co/api/jwt/introspect
-GA_SERVICE_TOKEN=<obtain from infrastructure team>
+GA_SERVICE_TOKEN=<request from Global Auth team via GA project ticket>
 ```
 
 Both approaches validate the token signature and expiration, decompress the `sess` field, and return the decoded session data including `person`. The difference is network topology: gRPC (Approach 1) for backends inside the perimeter with TxAuth agent access, HTTP (Approach 2) for backends outside the perimeter.
+
+## Introspect vs Get-Identity — What Each Returns
+
+**Introspect returns the data that is already in the token** — validated and decompressed, but nothing more. If `person.email` is absent from the JWT (e.g. Kratos L1 — see "Data Availability" below), introspect will also return no email. Introspect does not query the Kratos database — it only validates and unpacks the token.
+
+**To obtain full user data** (email, phone, name, etc.) when the token doesn't contain it, use the **Kratos S2S API `get-identity`** endpoint. This queries the Kratos identity database directly and returns the complete identity record regardless of what's in the token.
+
+| | Token Introspect (Approach 1 / 2) | Kratos S2S API `get-identity` |
+|---|---|---|
+| **Input** | JWT string | `person.kratosId` (**only** — not `person.id`) |
+| **Available for** | All providers | **Kratos only** (AD and Anonymous have no `kratosId`) |
+| **Returns** | Data from token (validated, decompressed) | Full identity from Kratos DB |
+| **Email (Kratos L1)** | **absent** (not in token) | array of 0+ verified emails |
+| **Phone (Kratos L1)** | **absent** (not in token) | array of 0+ verified phones |
+| **Email/Phone (Kratos L2)** | scalar, may be present | array of 0+ verified values |
+| **Validates token** | yes (signature, expiry, scope) | no (identity lookup, not token validation) |
+| **Use for** | Authentication, session validation | User registration, profile enrichment, contact data |
+
+**Typical flow when you need data not in the token:**
+1. Validate JWT via introspect → get `person.kratosId`
+2. **Verify `kratosId` is present** — it is absent for AD and Anonymous tokens. If absent, `get-identity` cannot be called.
+3. Call Kratos S2S API `get-identity` with `kratosId` → get full identity (emails, phones, logins, etc.)
+4. Use the identity data for registration, profile creation, or backend logic
+
+> **Anti-pattern**: Passing `person.id` to `get-identity` instead of `person.kratosId`. For Kratos L2 tokens, `person.id` is a client account GUID — not a Kratos identity ID. The call will fail or return wrong data.
+
+**Access**: `get-identity` uses Bearer token authentication like introspect, but it is a **separate privilege**. Each S2S method is individually granted — having introspect access does not imply `get-identity` access. By default, access is denied. To obtain credentials or request access to additional S2S methods, submit a ticket to the **GA project** or contact the **Global Auth team** directly.
+
+> **Common mistake**: Assuming introspect will return email or phone for all token types. If your backend needs contact data and the product uses Kratos L1, introspect alone is insufficient — you must add a `get-identity` call. Note that `get-identity` returns **arrays** (a user may have multiple verified emails or phones), while the token contains at most one scalar value per field. See "Data Availability by Provider and Auth Level" below.
 
 ## JWT Structure — What the Token Actually Contains
 
@@ -154,6 +183,8 @@ Key top-level claims:
 The JWT has `"zipped": true` — the `sess` payload is gzip-compressed. When you decode the JWT on the backend (e.g., `jwt.decode()` in Node.js), the `sess` field appears as a binary/base64 blob, **not** as a structured object.
 
 **Do not attempt to read `sess` fields without decompression.** Use one of the validation approaches above — they handle decompression and return structured data.
+
+> **Anti-pattern — manual JWT parsing**: Do NOT decode the JWT yourself (`jwt.decode()`, base64 decode + gunzip) and read `sess.person` fields directly. Even if you decompress successfully, this bypasses **all validation**: no signature check, no expiration check, no `appName` scope restriction. A tampered, expired, or stolen token will pass your code silently. The internal `sess` format is also not a stable API — field names, compression, and structure may change without notice. Always use TxAuth Agent (gRPC) or HTTP introspect for token validation and data extraction.
 
 ### The `firebase` Field Is a Nested JWT
 
@@ -193,11 +224,12 @@ AD provider variants:
 
 ### Kratos L1 Tokens (`KRATOS` and similar L1 providers)
 
+**For most current products**, the Kratos L1 token is minimal:
+
 ```json
 {
     "person": {
         "id": "e9b9aba4-...",
-        "email": "user@example.com",
         "kratosId": "e9b9aba4-..."
     },
     "permissions": [ ... ],
@@ -207,9 +239,11 @@ AD provider variants:
 ```
 
 - `person.id` **equals** `person.kratosId` — both are the Kratos identity UUID
-- `person` fields — **minimal**: often only `id`, `email`, `kratosId`. Name, lastname, login, phone may be **absent**.
+- `person` fields — **very minimal**: typically only `id` and `kratosId`. **Email, name, lastname, login, phone are absent.**
 - `userType` — may be absent
 - `permissions`, `segments`, `subscriptionTariff` — may be present
+
+**Kratos L1 special (deprecated)**: Some legacy products use an older provider configuration where `person.email` IS present in L1 tokens. If you encounter existing code that reads `person.email` from L1 tokens successfully, this is likely the case. New integrations should not depend on this behavior.
 
 Multiple L1 provider names exist depending on product configuration and region. All share the same session structure.
 
@@ -265,6 +299,27 @@ When correlating users across sessions or linking to internal databases:
 - For Kratos users (L1 and L2) — use `person.kratosId` as the stable identity. `person.id` may change between L1 and L2 for the same user.
 - For AD users — use `person.id` (the AD GUID). These users don't have a `kratosId`.
 
+### Data Availability by Provider and Auth Level
+
+**Not all `person` fields are populated for all providers and auth levels.** Before accessing any field, check whether it is available for the product's token type. A field existing in the proto definition does not mean it has a value.
+
+| Field | Kratos L1 special (deprecated) | Kratos L1 | Kratos L2 | AD | Anonymous |
+|-------|------------------------|-------------------|-----------|-----|-----------|
+| `person.id` | kratosId | kratosId | clientGUID (changes!) | AD GUID | deviceUUID |
+| `person.kratosId` | present | present | present | **absent** | **absent** |
+| `person.email` | **present** | **absent** | may be present | present | **absent** |
+| `person.name` | may be absent | may be absent | present | present | **absent** |
+| `person.lastname` | may be absent | may be absent | present | present | **absent** |
+| `person.login` | absent | absent | may be present | sAMAccountName | **absent** |
+| `person.verifiedPhone` | absent | absent | may be present | may be present | **absent** |
+
+**Key takeaways for backend developers:**
+- **Kratos L1** — the most common mode for consumer products — has **no email, no name, no login** in the token. If your backend needs the email (e.g. for user registration), you must obtain it through introspect (to get `kratosId`) → then `get-identity` (to get full identity data including all emails/phones).
+- **Kratos L1 special (deprecated)** — a legacy provider configuration where `person.email` IS present in the L1 token. If existing backend code reads email from L1 tokens successfully, the product may be using this deprecated provider. New integrations should NOT depend on this behavior.
+- **person.id changes between L1 and L2** — if your backend stores `person.id` from an L1 session and the user later upgrades to L2, the stored ID will no longer match. Use `person.kratosId` (or `kratos_id` in introspection response) as the stable key.
+- **Token fields are scalars, Kratos stores collections**: `person.email` and `person.verifiedPhone` in the token/introspection response are single values, but a Kratos identity may have **multiple** emails and phones. The token only contains one (if any). To get the full list, use `get-identity` — it returns all verified identifiers.
+- **Reading email/phone from introspection result** is fragile — the field may be absent depending on provider and auth level (see table above). If your backend relies on `person.email` from the introspection response, verify it is present for the product's provider type. If the field is absent but needed, use `get-identity` with `kratosId`.
+
 ## Determining 2FA Status from the JWT
 
 The JWT contains a top-level claim `tfa` that indicates the **current state** of two-factor authentication:
@@ -296,17 +351,22 @@ When validating via TxAuth Agent (gRPC `CheckJwt` / `CheckJwtByVariant`), the `a
 
 `sess` is a compressed JSON object containing the full session with person data. It is not a Kratos session identifier. Sending it to whoami will fail or return unexpected results.
 
-### Do NOT Parse JWT Claims for User Data
+### Do NOT Parse the JWT Manually for User Data
 
-**Wrong**: Decoding the JWT and looking for `email`, `first_name`, `sub`, or similar standard claims at the top level.
+**Wrong**: Any form of manual JWT parsing to extract user data:
+- Looking for `email`, `first_name`, `sub`, or similar standard claims at the top level (they don't exist — this is not an OIDC token)
+- Using `jwt.decode()` + gunzip to decompress `sess` and read `person` fields directly
+- Base64-decoding JWT segments and extracting fields with regex or string manipulation
 
-TxGlobalAuth JWTs do not follow standard OIDC claim naming. User data is inside `sess.person` (compressed). Use the validation service to extract it.
+All of these bypass signature validation, expiration checks, and `appName` scope restriction. A tampered, expired, or stolen token will be accepted silently. The internal `sess` format is not a stable API — field names, compression, and structure may change.
+
+**Always** use TxAuth Agent (gRPC) or HTTP introspect (see Approach 1 and 2 above) to validate and extract data from tokens.
 
 ### Do NOT Assume Session Fields Are Always Present
 
 **Wrong**: Accessing `sess.person.name`, `sess.userType`, `sess.firms`, etc. without checking if they exist.
 
-The session structure varies dramatically by provider and auth level. Kratos L1 tokens may contain only `person.id`, `person.email`, and `person.kratosId` — with no name, lastname, login, phone, userType, firms, or other fields. Always treat every field except `person.id` as optional.
+The session structure varies dramatically by provider and auth level. Kratos L1 tokens may contain **only** `person.id` and `person.kratosId` — with no email, name, lastname, login, phone, userType, firms, or other fields. Always treat every field except `person.id` as optional. See "Data Availability by Provider and Auth Level" above.
 
 ### Do NOT Use person.id as a Stable Cross-Level Identifier
 
@@ -326,6 +386,18 @@ Use whoami only as a supplementary check, not as the primary source of user data
 ### Do NOT Skip Validation for "Trusted" Frontends
 
 Even in internal enterprise applications, always validate the JWT. The token arrives from the browser — it can be tampered with, replayed, or expired. Validation is not optional.
+
+### Do NOT Use /sessions/token as a Token Validation Shortcut
+
+**Wrong**: Calling `POST https://ga.{domain}/sessions/token` from your backend (or frontend) to validate tokens or resolve user data instead of using proper introspection (Approach 1 or 2 above).
+
+This is an **internal Kratos endpoint** used by the TxGlobalAuth widget internally. It is not a public API and not a substitute for token introspection:
+- **Will break** when IP/UserAgent binding is enforced (planned security hardening)
+- Does not perform full token validation (signature, expiration, scope)
+- Returns data in a format that differs from the introspection response
+- Not designed for S2S calls — no service token authentication, no `appName` restriction
+
+**If you encounter direct calls to `/sessions/token` in existing code** (frontend or backend), this is typically a workaround for obtaining data (usually email) that isn't in the JWT for the product's provider type (see "Data Availability by Provider and Auth Level"). The correct backend approach: validate JWT via introspect → call Kratos S2S API (`get-identity`) for full user data.
 
 ## Common Integration Pattern: Token Exchange
 

@@ -9,6 +9,32 @@ This skill provides expert knowledge of the TxGlobalAuth authentication widget f
 
 **Important**: All TxGlobalAuth methods are available only after successful `init()`. Always structure code so that all API calls happen inside the `.then()` callback of `init()` or after `await init()`.
 
+## Pre-Integration Health Check
+
+**Before writing or reviewing any TxGlobalAuth code, verify the integration baseline.** Most integration bugs stem from loading the wrong build or calling non-existent methods. Run these checks first — they take 30 seconds and prevent hours of debugging.
+
+**Step 0 — Verify the widget build:**
+
+1. **Check the CDN URL** in the HTML/script loader. The path must end with `/auth-widget/@8.js` — the hostname varies by CDN region (there are multiple CIS and international CDN hosts), but the path is always the same.
+   - Correct pattern: `https://{cdn-host}/auth-widget/@8.js`
+   - If you see `global-auth.v8.js` in the URL (any host) — **STOP**. This is the internal UI module, not the official wrapper. See "Widget Architecture" below.
+
+2. **Check the API surface** in the deployed environment (browser console):
+   ```javascript
+   typeof TxGlobalAuth.subscribeJWT    // Must be 'function'
+   typeof TxGlobalAuth.getJwt          // Must be 'function'
+   typeof TxGlobalAuth.getTokenProvider // Must be 'function'
+   ```
+   If any returns `'undefined'` — the wrong build is loaded. The internal build has a completely different API (`subscribeToJwt`, `getPublicSession`, etc.).
+
+3. **Check the export type**:
+   ```javascript
+   typeof TxGlobalAuth                 // May be 'function' or 'object' — both are valid
+   ```
+   The official build may export `TxGlobalAuth` as a constructor function (not a plain object). Type checks in existing code must accept both — see "Script Loading" below.
+
+**Only proceed with code review or refactoring after all three checks pass.** If Step 0 fails, fix the CDN URL first — all other issues may be symptoms of the wrong build.
+
 ## Integration Rules
 
 **Before writing any init code**, you MUST know the `appName`. First check the existing codebase for a TxGlobalAuth.init() call — if found, reuse that `appName`. If there is no existing init in the project and the user hasn't specified one, ask directly: "Which `appName` should I use for TxGlobalAuth init?" Do not guess or use a default value — the `appName` determines the authentication mode (Kratos, AD, or Anonymous) and using the wrong one will produce non-functional code.
@@ -41,6 +67,28 @@ The mode is determined by the `appName` — each product has a preconfigured mod
 | **L2 (Client)** | L1 + second factor verified (e.g. 2FA). | `TxGlobalAuth.isAuthenticatedUserClient()` |
 
 Note: `isAuthenticatedUserAccount()` returns `true` for both Kratos L1 and AD-authenticated users.
+
+### Data Availability by Provider and Auth Level
+
+**Not all `person` fields are populated for all providers and auth levels.** If you see code accessing `person.email` or `person.name` — check whether the field is actually available for the product's provider type. A field being in the TypeScript type does not mean it has a value.
+
+| Field | Kratos L1 special (deprecated) | Kratos L1 | Kratos L2 | AD | Anonymous |
+|-------|------------------------|-------------------|-----------|-----|-----------|
+| `person.id` | kratosId | kratosId | clientGUID (changes!) | AD GUID | deviceUUID |
+| `person.kratosId` | present | present | present | **absent** | **absent** |
+| `person.email` | **present** | **absent** | may be present | present | **absent** |
+| `person.name` | may be absent | may be absent | present | present | **absent** |
+| `person.lastname` | may be absent | may be absent | present | present | **absent** |
+| `person.login` | absent | absent | may be present | sAMAccountName | **absent** |
+| `person.verifiedPhone` | absent | absent | may be present | may be present | **absent** |
+
+**Key takeaways:**
+- **Kratos L1** — the most common mode for consumer products — has **no email, no name, no login** in the token. Only `person.id` and `person.kratosId` are reliable. If you need a verified email, use `requireEmail()` — it checks Kratos identity first and only prompts the user if the email is missing; after it resolves, the identity is updated and `getIdentifiers()` returns the email. Alternatively, obtain the email through the backend via `get-identity`.
+- **Kratos L1 special (deprecated)** — a legacy provider configuration where `person.email` IS present in the L1 token. If you encounter an integration that reads email from L1 tokens and it works — the product may be using this deprecated provider. New integrations should NOT depend on this behavior.
+- **person.id changes meaning** between L1 and L2 for Kratos users — see "person.id vs person.kratosId" in the `global-auth:backend` skill.
+- **AD users** have no `kratosId` — use `person.id` (AD GUID) as the identifier.
+- **Token fields are scalars, Kratos stores collections**: `person.email` and `person.verifiedPhone` in the token are single values, but a Kratos identity may have **multiple** emails and phones. The token only contains one (if any). To check whether a user has a verified email or phone **at all**, use `getIdentifiers()` (returns masked values) or `getVerificationInfo()` — do not rely on token fields for presence checks.
+- **Reading email/phone from token fields** is not strictly wrong if the value happens to be present, but it is **fragile** — the field may be absent depending on provider and auth level (see table above). If you see code reading `person.email` or `person.verifiedPhone` from the token, **raise the question**: is this field guaranteed to be present for this product's provider type? If not, consider `requireEmail()` / `requirePhone()` (idempotent — resolves instantly if the identity already has the data, otherwise prompts and saves to Kratos) or a backend `get-identity` call.
 
 ### Key Integration Concepts
 
@@ -107,16 +155,66 @@ If you skip step 1-2, the app will have two logout mechanisms that conflict with
 
 ## Script Loading
 
+### Widget Architecture: Two-Layer Build System
+
+TxGlobalAuth has a **two-layer architecture**. Understanding this prevents the single most common integration mistake:
+
+| Layer | File | What it is |
+|-------|------|------------|
+| **Official wrapper** | `auth-widget/@8.js` | Public API facade. Adds `subscribeJWT`, `getJwt`, `getTokenProvider`, and all documented methods. **This is what you must load.** |
+| **Internal UI module** | `global-auth.v8.js` | Internal rendering engine with a **private, undocumented API** — no backward compatibility guarantees for external consumers. **NEVER load this directly.** |
+
+The wrapper (`auth-widget/@8.js`) internally loads the UI module itself — there is no reason to reference `global-auth.v8.js` directly, and doing so bypasses all public API guarantees.
+
+> **Critical**: If you see `global-auth.v8.js` in a `<script>` tag or dynamic loader — the project is using the internal build directly. This is not a supported configuration. The internal module's methods can be renamed, removed, or changed at any version bump without notice. The entire public API described in this skill is unavailable. Fix the CDN URL before doing anything else.
+
+### Internal Build API vs Official Wrapper API
+
+If you encounter these method names in existing code, the project is loading the **internal build** (`global-auth.v8.js`) instead of the official wrapper (`auth-widget/@8.js`):
+
+| Internal build (wrong) | Official wrapper (correct) | Notes |
+|------------------------|---------------------------|-------|
+| `subscribeToJwt` | `subscribeJWT` | Different casing AND different name |
+| `getPublicSession` | `getJwt` | Completely different method name |
+| `getAuthenticationState` | `isAuthenticatedUserAccount` | Different name and possibly different return type |
+| No `getTokenProvider` | `getTokenProvider()` | Method does not exist in internal build |
+
+**If you see `subscribeToJwt`, `getPublicSession`, or `getAuthenticationState` in code — do NOT treat them as typos or "fictional methods".** They are private methods of the internal build — not part of the public API and not covered by backward compatibility guarantees. They can be renamed or removed in any release. The only fix is to change the CDN URL to the official wrapper and update all method calls to the public API.
+
+**Fallback chains like `getJwt || getJWT || getToken` in existing code** are a symptom of developers not knowing which build they loaded, trying to find a working method by trial and error. Do not remove these chains without first fixing the CDN URL — the chain may be the only thing keeping the integration partially functional.
+
 ### CDN Sources (v8 - current)
+
+The official wrapper is always at the path `/auth-widget/@8.js`. The hostname varies by CDN region — there are multiple CDN hosts for CIS (5 hosts) and international (3 hosts) deployments. Two common examples:
+
 ```html
-<!-- Yandex CDN -->
+<!-- CIS CDN (one of several hosts) -->
 <script src="https://libs-cdn.finam.ru/auth-widget/@8.js"></script>
 
-<!-- Amazon CDN -->
+<!-- International CDN (one of several hosts) -->
 <script src="https://libs-cdn.lime.co/auth-widget/@8.js"></script>
 ```
 
-**CDN selection**: Use Yandex CDN (`finam.ru`) for CIS countries-targeted products. Use Amazon CDN (`lime.co`) for international products. When unsure, ask the developer.
+**CDN selection**: The project should already have a CDN URL configured — check the existing codebase. If starting from scratch, ask the developer which CDN host to use for their product and region.
+
+**How to verify**: The URL path must end with `/auth-widget/@8.js`. The hostname doesn't matter for correctness — all CDN hosts serve the same build. What matters is that the path points to the **wrapper** (`auth-widget/@8.js`), not the **internal module** (`global-auth.v8.js`).
+
+> **Warning about other URLs**: URLs containing `global-auth.v8.js` in the path (on any host, e.g. `ga.lime.co/globalauth/ga/global-auth.v8.js`) point to the **internal UI module**, not the official wrapper. The widget UI may appear to work, but the JavaScript API is completely different, private, and **may change in any release** without backward compatibility.
+
+### TxGlobalAuth Export Type
+
+The official build may export `TxGlobalAuth` as a **constructor function**, not a plain object. Code that checks `typeof window.TxGlobalAuth` must accept both:
+
+```javascript
+// WRONG — rejects function exports
+if (typeof window.TxGlobalAuth !== 'object') { /* error */ }
+
+// CORRECT — accepts both function and object exports
+if (typeof window.TxGlobalAuth !== 'function' && typeof window.TxGlobalAuth !== 'object') { /* error */ }
+
+// ALSO CORRECT — check for existence and specific methods
+if (window.TxGlobalAuth && typeof window.TxGlobalAuth.init === 'function') { /* ready */ }
+```
 
 ### Deferred Loading
 
@@ -244,6 +342,14 @@ await TxGlobalAuth.requirePhone({ initialData: { phone: '+4...' } });
 await TxGlobalAuth.requireEmail({ initialData: { email: '...' } });
 // Both resolve with { hasVerifiedEmail, hasVerifiedPhone }
 // Reject with error.payload?.verificationInfo on failure
+//
+// How these work:
+// 1. Check Kratos identity traits — does the user already have a verified email/phone?
+// 2. If YES → resolve immediately, no UI shown
+// 3. If NO → show input form → validate → save to Kratos identity → resolve
+//
+// After resolve, the Kratos identity is updated — getIdentifiers() will now return
+// the verified email/phone (masked). This is an identity mutation, not just a prompt.
 ```
 
 ### Profile Data with Validation
@@ -370,7 +476,9 @@ The callback fires in several distinct scenarios. Your handler must distinguish 
 | `null` | Not authenticated | **Already logged out** | No action needed |
 | `response` (token, immediate on subscription) | Authenticated | **Page reload / re-mount** | Sync identity tracker with token, no backend exchange needed |
 
-**Identity tracking**: To distinguish "token refresh" from "account switch", compare `person.id` from the new token against the `person.id` you stored from the previous session. Use `person.id` (UUID, immutable within a session) — not `person.login` or `person.email`, which may be absent for some providers. See `PersonData` type below and the `global-auth:backend` skill for `person.id` semantics across provider types.
+**Identity tracking**: To distinguish "token refresh" from "account switch", compare `person.id` from the new token against the `person.id` you stored from the previous callback. Use `person.id` (always present, immutable within a session) — not `person.login` or `person.email`, which may be absent for some providers.
+
+> **Important nuance**: `person.id` is stable for detecting account switches within a session, but its **meaning changes across auth levels** — at L1 it equals `kratosId`, at L2 it becomes a client account GUID. If you persist `person.id` to your backend for long-term user tracking, use `person.kratosId` instead (stable across L1→L2 transitions). See "Data Availability by Provider and Auth Level" above and the `global-auth:backend` skill for details.
 
 **React implementation sketch** (extends the basic example above):
 
@@ -451,7 +559,9 @@ For AD-type providers (`AD_OFFICE`, `AD_OFFICE_OTP`, `AD_OFFICE_SMS`, `AD_WTE`, 
 
 `session.userType` is `"EMPLOYEE_USER_TYPE"` for AD-authenticated users.
 
-**Identity tracking field**: Use `person.id` to track which user is currently authenticated in your app (e.g., to detect account switches in `subscribeJWT`). Do not use `person.login` or `person.email` — these may be absent for some provider types (e.g., Kratos L1 may not have `login`). `person.id` is always present and immutable within a session. For details on how `person.id` semantics differ across providers, see the `global-auth:backend` skill — section "person.id Semantics".
+**Identity tracking field**: Use `person.id` to track which user is currently authenticated **within a single session** (e.g., to detect account switches in `subscribeJWT`). Do not use `person.login` or `person.email` — these may be absent for some provider types (e.g., Kratos L1 has no login or email).
+
+> **Warning**: `person.id` is **not stable across authentication levels**. For the same Kratos user, `person.id` equals `kratosId` at L1, but changes to a client/trading account GUID at L2. If your app stores `person.id` and the user later upgrades to L2, the stored ID will no longer match. **Use `person.kratosId` as the stable primary key for Kratos users.** For AD users, `person.id` (AD GUID) is stable — but `kratosId` is absent. See the `global-auth:backend` skill — section "person.id Semantics" and "Data Availability by Provider and Auth Level".
 
 **AD provider variants**:
 - `AD_OFFICE` — standard AD authentication (username + password)
@@ -568,11 +678,18 @@ const data = await TxGlobalAuth.getUserProfileData();
 // Get verification status
 const verInfo = TxGlobalAuth.getVerificationInfo();
 
-// Get user identifiers (masked for privacy) — Kratos-only
+// Get user identifiers — Kratos-only, returns MASKED data
 const { emails, phones, logins } = await TxGlobalAuth.getIdentifiers();
+// emails example: ["j***@example.com"] — masked, NOT the full email address
 ```
 
-> **Note for integrators**: `getUserProfileData`, `getVerificationInfo`, and `getIdentifiers` are under active refactoring consideration. Their behavior may be non-obvious. When using these methods, confirm with the developer that the expected behavior matches their understanding. **`getIdentifiers()` currently works only for Kratos providers** — for AD sessions, retrieve user data from `subscribeJWT` callback's `response.session.person` or from `getTokenProvider().getResponse().session.person` instead.
+> **Warning — `getIdentifiers()` returns MASKED identifiers**: Values are partially hidden (e.g. `j***@example.com`, `+1***0690`). These are **for display purposes only** — do NOT use them for registration, identity verification, backend lookups, or any business logic that requires the actual value.
+>
+> **Anti-pattern**: `getIdentifiers().emails[0]` to obtain user email for backend registration — this returns a masked string, not the real email.
+>
+> **`getIdentifiers()` currently works only for Kratos providers** — for AD sessions, retrieve user data from `subscribeJWT` callback's `response.session.person` or from `getTokenProvider().getResponse().session.person` instead.
+>
+> `getUserProfileData`, `getVerificationInfo`, and `getIdentifiers` are under active refactoring consideration. Their behavior may change.
 
 ## UI Management
 
@@ -682,15 +799,19 @@ interface Session {
 }
 
 interface PersonData {
-    id: string;           // USE THIS for identity tracking — UUID, immutable within a session
-    name?: string;        // First name (may be absent for Kratos L1)
-    lastname?: string;    // Last name (may be absent for Kratos L1)
+    id: string;           // WARNING: semantics change by provider! L1=kratosId, L2=clientGUID, AD=AD GUID
+                          // Use for session-level identity tracking only. See "Data Availability" table.
+                          // Anti-pattern: using person.id as a stable primary key — it CHANGES when user transitions L1→L2
+    name?: string;        // First name — ABSENT for Kratos L1
+    lastname?: string;    // Last name — ABSENT for Kratos L1
     middlename?: string;  // Patronymic (AD-specific, may be absent)
-    email?: string;       // Email — do NOT use for identity comparison
-    login?: string;       // AD sAMAccountName or Kratos login — do NOT use for identity comparison
-    verifiedPhone?: string; // Phone (may be absent)
+    email?: string;       // ABSENT for Kratos L1. Do NOT use for identity comparison.
+    login?: string;       // AD sAMAccountName or Kratos login — ABSENT for L1. Do NOT use for identity comparison.
+    verifiedPhone?: string; // Phone — ABSENT for L1
     gender?: number;
-    kratosId?: string;    // Present for Kratos providers, absent for AD
+    kratosId?: string;    // STABLE identity for Kratos users (same across L1→L2). Absent for AD.
+                          // For Kratos: use this as primary key, not person.id
+                          // For AD: use person.id (AD GUID) — kratosId is absent
 }
 
 interface TokenProvider {
@@ -897,3 +1018,82 @@ try {
     console.log('Auth flow interrupted by user');
 }
 ```
+
+## Diagnosing Existing Integrations
+
+When reviewing or refactoring existing TxGlobalAuth code, the integration is often broken in non-obvious ways. The rest of this skill describes how to build correct integrations — this section helps you recognize and fix common problems in code that already exists.
+
+**Always start with the Pre-Integration Health Check** (top of this skill) before analyzing code logic.
+
+### Symptom: Method Names Don't Match This Skill
+
+**Diagnosis**: The project is loading the **internal build** (`global-auth.v8.js`) instead of the official wrapper (`auth-widget/@8.js`).
+
+**What you'll see in code**:
+- `subscribeToJwt` instead of `subscribeJWT`
+- `getPublicSession` instead of `getJwt`
+- `getAuthenticationState` instead of `isAuthenticatedUserAccount`
+- Fallback chains like `obj.getJwt || obj.getJWT || obj.getToken`
+
+**Why this happens**: Developers found the wrong CDN URL (internal URL that looks official) and wrote code against whatever API they could discover through trial and error.
+
+**Fix**: Change the CDN URL to the official wrapper (path must be `/auth-widget/@8.js` — ask the developer for the correct CDN host), then update all method calls to match the official API documented in this skill.
+
+**Do NOT**: Remove fallback chains without fixing the CDN URL first — the chain may be compensating for the wrong build. Do NOT treat unfamiliar method names as "typos" or "fictional" — they are methods from the internal build. But do NOT keep using them either — they are private API without backward compatibility guarantees and may change in any release.
+
+### Symptom: Auth State Updates Through Multiple Paths
+
+**Diagnosis**: The integration has **competing state management** — some auth state flows through `subscribeJWT`, some through direct event handlers, and some through custom endpoints.
+
+**What you'll see in code**:
+- `subscribeJWT` callback updates one store, but a separate `initializeAuthFx.doneData` or similar effect updates another
+- `subscribeGlobal('logout', ...)` clears state, duplicating what `subscribeJWT(null)` should do
+- Direct calls to `/sessions/token` or other Kratos endpoints to resolve user data
+
+**Why this happens**: The integration was built incrementally — developers added data sources as they discovered the original approach didn't provide what they needed (e.g., email not in token, wrong build loaded).
+
+**Fix**: Consolidate to `subscribeJWT` as the single source of truth. Remove duplicate state paths **only after verifying that `subscribeJWT` actually fires correctly** (which requires the correct CDN build — check Step 0 first). If the duplicate path exists because `subscribeJWT` doesn't provide needed data (e.g., email), address the root cause (wrong build, or use `requireEmail()` to ensure the identity has an email, or backend S2S `get-identity`).
+
+**Do NOT**: Remove a "redundant" state update path without understanding why it was added. It may be the only working path if the primary one (subscribeJWT) is broken due to a CDN issue.
+
+### Symptom: Direct Calls to Kratos Endpoints
+
+**Diagnosis**: The frontend bypasses TxGlobalAuth to call Kratos endpoints directly — typically to get data that isn't available through the widget API for their provider type.
+
+**What you'll see in code**:
+- `fetch('https://ga.*/sessions/token', ...)` — resolving session data directly
+- `fetch('https://ga.*/sessions/whoami', ...)` — checking session validity
+- Custom "introspect" calls from the frontend
+
+**Why this happens**: The developer needed data (usually email) that isn't in the JWT for their provider type (Kratos L1 has no email — see Data Availability table). Instead of using `requireEmail()` or a backend S2S flow, they called Kratos directly.
+
+**Fix**: See the `global-auth:backend` skill anti-pattern "Do NOT Call /sessions/token from the Frontend". Route data needs through the backend (S2S introspect → `get-identity`) or use `requireEmail()` / `requirePhone()` to ensure the identity has the needed data.
+
+### Symptom: person.id Used as Database Primary Key
+
+**Diagnosis**: The app stores `person.id` as the user identifier in its database and correlates sessions by matching it.
+
+**What will break**: When the user transitions from L1 to L2, `person.id` changes from `kratosId` to a client account GUID. The app creates a duplicate user record or fails to find the existing one.
+
+**Fix**: Use `person.kratosId` as the stable key for Kratos users. For AD users (where `kratosId` is absent), `person.id` is stable and safe to use. See "person.id Semantics" in the `global-auth:backend` skill.
+
+### Symptom: Email Extraction Functions That Always Return Null
+
+**Diagnosis**: The code has functions like `extractEmailFromJwt()` or `getEmailFromSession()` that parse the token for email — but the product uses Kratos L1 where email is **never present** in the token.
+
+**What you'll see**: The function exists, has proper implementation, but always returns `null` at runtime. It may have been written in anticipation of L2 support or copied from another project using a different provider.
+
+**Fix**: If the product will always be Kratos L1 — remove the dead code. If email is needed, use `requireEmail()` (checks Kratos identity, prompts only if missing, saves to Kratos) or obtain it via backend S2S `get-identity` flow. Do NOT leave the function "just in case L2 might be added someday" — YAGNI applies.
+
+### Review Priority Order
+
+When reviewing an existing TxGlobalAuth integration, work in this order:
+
+1. **CDN URL** — verify the correct build is loaded (Step 0). If wrong, fix this first; everything else may be a symptom.
+2. **API method names** — check if they match the official API. If not, see "Internal Build API vs Official Wrapper API" above.
+3. **State management** — verify `subscribeJWT` is the single source of truth. Look for competing state paths.
+4. **Identity handling** — check which `person` fields are used and whether they're available for this provider type.
+5. **Direct Kratos calls** — search for `fetch` calls to `ga.*` domains from the frontend.
+6. **Logout flow** — verify logout goes through `TxGlobalAuth.logout()`, not direct cookie/store clearing.
+
+**Only after verifying 1-2 should you proceed to logic-level code review.** Fixing logic bugs in code that uses the wrong API is wasted effort.
