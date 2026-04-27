@@ -16,6 +16,36 @@ This skill covers backend integration with TxGlobalAuth — specifically JWT tok
 
 **Proto file for TxAuth JwtAgent integration**: The proto definition for `txAuth.JwtAgent` service is located in the corporate Bitbucket repository at `projects/SER/repos/proto-repo/browse/grpc-txauth/src/main/proto/grpc/txauth/jwt_agent.proto`. Use this proto file to generate gRPC client stubs for token validation via the TxAuth agent.
 
+## Probing Questions — Ask These First
+
+**Before answering any backend integration question, you usually do not have enough context.** Most TxGlobalAuth backend questions ("how do I get the email", "why does my call return 403", "how do I store the user") have completely different answers depending on a small set of variables that the developer rarely volunteers up front. Ask actively — do not guess.
+
+**The minimum context you need:**
+
+1. **`appName` and authentication level** — is the product configured for Kratos L1, Kratos L2, AD, or Anonymous? The `appName` determines this. The JWT structure, which `person` fields are present, whether `kratosId` exists, and whether `get-identity` is needed at all — all depend on this. **A question about "user data from the JWT" cannot be answered without knowing the level.** See "Data Availability by Provider and Auth Level" below.
+
+2. **Network position** — is the backend **inside the corporate network perimeter** (can reach TxAuth infrastructure / Consul) or **outside** (e.g. external cloud, no VPN)? This determines whether the correct approach is TxAuth Agent (gRPC, Approach 1) or HTTP introspect (Approach 2). Inside the perimeter using HTTP introspect is an anti-pattern — see below.
+
+3. **What data the backend actually needs and why** — name/email "for display in the personal cabinet" has a very different correct answer than "as the primary key in our user table" or "for sending transactional email". The first should not even hit the backend (frontend `session.person` already has it for L2/AD). The second should use `kratosId` as the key, not the contact data. The third is the only case that genuinely needs `get-identity`.
+
+4. **Where the data will be used** — display-only / business logic / audit log / matching / outbound communication. Each has a different correct pattern. In particular: **never use stored PII (login, email, phone) as a matching key** (see "Storing User Data — Trade-offs" below).
+
+**Heuristic flow when a developer asks "how do I get email/name/phone on the backend":**
+
+```
+What is the appName / level?
+├─ AD → person fields are in the token; introspect/agent returns them. No get-identity (no kratosId).
+├─ Kratos L2 → all relevant person fields are in the token. introspect/agent is enough. No get-identity needed.
+├─ Kratos L1 → email/name/phone are NOT in the token. You need:
+│   ├─ Display only → use frontend session.person (already decoded in widget) — do not fetch from backend
+│   ├─ Server-side use → introspect to get kratosId → call get-identity with kratosId
+│   │   (get-identity is a SEPARATE S2S privilege from introspect — submit a ticket to project GA)
+│   └─ Just verifying user has email/phone → use frontend requireEmail()/requirePhone() instead
+└─ Anonymous → no user data exists; only deviceUUID
+```
+
+**If you cannot answer these questions yet, ask them — do not produce a generic answer that risks being wrong for the developer's actual configuration.**
+
 ## Token Validation — Required
 
 **Every backend that receives a TxGlobalAuth JWT must validate it.** Never trust a token without validation — the frontend is an untrusted environment.
@@ -247,6 +277,14 @@ Both approaches validate the token signature and expiration, decompress the `ses
 
 ## Introspect vs Get-Identity — What Each Returns
 
+**Both `introspect` and `get-identity` are S2S (server-to-server) endpoints** — called from your backend with a `SERVICE_TOKEN`, never from the browser. Each grants a separate privilege.
+
+> **Do not confuse `get-identity` (S2S, this skill) with `getIdentifiers()` (WEB, in-browser widget method).** They have nothing to do with each other:
+> - `get-identity` — backend S2S Kratos API. Returns full identity record (all traits, all verified emails/phones, **unmasked**). Requires `SERVICE_TOKEN` and a separately-granted privilege. Documented in this skill.
+> - `getIdentifiers()` — frontend widget method (`TxGlobalAuth.getIdentifiers()`). Returns only verified emails/phones, **masked** (`j***@example.com`), for in-app display. No service token, runs in the browser. Documented in `global-auth:frontend` skill.
+>
+> They are not interchangeable, not comparable, and serve different audiences. If a developer says "I'll just use `getIdentifiers` from the backend" — that is a category error.
+
 **Introspect returns the data that is already in the token** — validated and decompressed, but nothing more. If `person.email` is absent from the JWT (e.g. Kratos L1 — see "Data Availability" below), introspect will also return no email. Introspect does not query the Kratos database — it only validates and unpacks the token.
 
 **To obtain full user data** (email, phone, name, etc.) when the token doesn't contain it, use the **Kratos S2S API `get-identity`** endpoint. This queries the Kratos identity database directly and returns the complete identity record regardless of what's in the token.
@@ -401,19 +439,31 @@ Multiple L2 provider names exist depending on product and region. All share the 
 
 ### person.id Semantics — Critical
 
-**The meaning of `person.id` changes depending on the provider:**
+**`person.id` is not a single concept — it is a key under which different identifiers are exposed depending on the provider.** This is the most common source of integration bugs.
 
-| Provider Type | `person.id` | `person.kratosId` |
-|---------------|-------------|-------------------|
-| AD | LDAP/AD GUID | absent |
-| Kratos L1 | = kratosId (same value) | Kratos UUID |
-| Kratos L2 | Trading/client account ID | Kratos UUID |
+| Provider Type | What `person.id` actually is | `person.kratosId` |
+|---------------|------------------------------|-------------------|
+| AD | LDAP/AD GUID (objectGUID) | absent |
+| Kratos L1 | **The same value as `kratosId`** — both fields hold the Kratos identity UUID | Kratos UUID |
+| Kratos L2 | A separate identifier — client/trading account GUID (internally referred to as "Global ID" because it is stored in the Global DB) | Kratos UUID |
 
-**`person.kratosId` (camelCase in decoded token / `kratos_id` snake_case in introspection API response) is the stable user identity** across authentication levels. Think of it as the primary identity — everyone who authenticates through Kratos gets one. `person.id` in L2 is a secondary identifier (trading account) that the user acquires when they become a client. For AD users, `person.id` (AD GUID) is the only identifier since they exist outside the Kratos identity system.
+**This is not "person.id changes value between L1 and L2".** For the same user, the L1 token's `person.id` carries the Kratos UUID, and the L2 token's `person.id` carries a different identifier entirely (the client account GUID). The field name is the same; the semantics underneath are different.
 
-When correlating users across sessions or linking to internal databases:
-- For Kratos users (L1 and L2) — use `person.kratosId` as the stable identity. `person.id` may change between L1 and L2 for the same user.
-- For AD users — use `person.id` (the AD GUID). These users don't have a `kratosId`.
+**Implications:**
+
+- `person.kratosId` (camelCase in decoded token / `kratos_id` snake_case in introspection API response) is the **stable user identity** across authentication levels and the recommended primary key for any Kratos user. It is **not 100% immutable** — rare identity-merge events (e.g. when a Kratos identity is merged with an existing one) can change it — but it is the most stable identifier the ecosystem provides. Treat absolute immutability as a property no system can guarantee.
+- The L2 `person.id` (client account GUID / "Global ID") can also change in rare cases (account merges, re-issuance), and its semantics have nothing to do with the L1 `person.id` of the same user.
+- For AD users, `person.id` (AD GUID) is the only stable identifier available — `kratosId` is absent. AD users live outside the Kratos identity system entirely.
+
+**Recommended primary key choice:**
+
+| User type | Primary key |
+|-----------|-------------|
+| Kratos users (L1 or L2) | `person.kratosId` (camelCase in JWT / `kratos_id` snake_case in introspect response) |
+| AD users | `person.id` (AD GUID) |
+| Anonymous (device) | `person.id` (device UUID) — but no human identity is implied |
+
+**Anti-framing to avoid in code, comments, and conversation**: do not call `person.id` "the global ID of the user" without qualification. The phrase is technically correct only for L2 (where the value comes from the Global DB), and it actively misleads readers into using `person.id` as a stable cross-level identity. Be explicit: "`person.id` at L1 = `kratosId`; at L2 = client account GUID; for stable cross-level matching use `kratosId`".
 
 ### Data Availability by Provider and Auth Level
 
@@ -421,18 +471,21 @@ When correlating users across sessions or linking to internal databases:
 
 | Field | Kratos L1 special (deprecated) | Kratos L1 | Kratos L2 | AD | Anonymous |
 |-------|------------------------|-------------------|-----------|-----|-----------|
-| `person.id` | kratosId | kratosId | clientGUID (changes!) | AD GUID | deviceUUID |
+| `person.id` | = `kratosId` (same value) | = `kratosId` (same value) | `clientGUID` (different identifier — see below) | AD GUID | deviceUUID |
 | `person.kratosId` | present | present | present | **absent** | **absent** |
-| `person.email` | **present** | **absent** | may be present | present | **absent** |
+| `person.email` | **present**, unmasked | **absent** | may be present, unmasked | present, unmasked | **absent** |
 | `person.name` | may be absent | may be absent | present | present | **absent** |
 | `person.lastname` | may be absent | may be absent | present | present | **absent** |
 | `person.login` | absent | absent | may be present | sAMAccountName | **absent** |
-| `person.verifiedPhone` | absent | absent | may be present | may be present | **absent** |
+| `person.verifiedPhone` | absent | absent | may be present, unmasked | may be present, unmasked | **absent** |
+
+> **Note on masking**: Values inside the JWT and introspection response are **never masked** — `person.email` returns `john.doe@example.com`, not `j***@example.com`. Masking is performed only by the **frontend** `getIdentifiers()` widget method (see `global-auth:frontend` skill) — that is a separate WEB endpoint for in-app display, not part of S2S backend flow.
 
 **Key takeaways for backend developers:**
 - **Kratos L1** — the most common mode for consumer products — has **no email, no name, no login** in the token. If your backend needs the email (e.g. for user registration), you must obtain it through introspect (to get `kratosId`) → then `get-identity` (to get full identity data including all emails/phones).
 - **Kratos L1 special (deprecated)** — a legacy provider configuration where `person.email` IS present in the L1 token. If existing backend code reads email from L1 tokens successfully, the product may be using this deprecated provider. New integrations should NOT depend on this behavior.
-- **person.id changes between L1 and L2** — if your backend stores `person.id` from an L1 session and the user later upgrades to L2, the stored ID will no longer match. Use `person.kratosId` (or `kratos_id` in introspection response) as the stable key.
+- **`person.id` semantics differ between L1 and L2** — at L1, `person.id` and `kratosId` are literally the **same value** (the Kratos UUID); at L2, `person.id` becomes a **different identifier** (a client/trading account GUID — internally called the "Global ID" because it is stored in the Global DB). This is **not "the same field changing value"** — they are semantically different identifiers exposed under the same key. Code that stores `person.id` from L1 will mismatch the same user's `person.id` at L2.
+- **Use `kratosId` as the stable key for Kratos users** — it is the same identity from L1 to L2 and is the most stable identifier in the ecosystem. It is not 100% immutable (rare identity-merge events can change it), but no identifier in any system is — `kratosId` is the best available.
 - **Token fields are scalars, Kratos stores collections**: `person.email` and `person.verifiedPhone` in the token/introspection response are single values, but a Kratos identity may have **multiple** emails and phones. The token only contains one (if any). To get the full list, use `get-identity` — it returns all verified identifiers.
 - **Reading email/phone from introspection result** is fragile — the field may be absent depending on provider and auth level (see table above). If your backend relies on `person.email` from the introspection response, verify it is present for the product's provider type. If the field is absent but needed, use `get-identity` with `kratosId`.
 
@@ -486,9 +539,25 @@ The session structure varies dramatically by provider and auth level. Kratos L1 
 
 ### Do NOT Use person.id as a Stable Cross-Level Identifier
 
-**Wrong**: Storing `person.id` from an L1 token and expecting it to match `person.id` from an L2 token.
+**Wrong**: Storing `person.id` from an L1 token and expecting it to match `person.id` from an L2 token for the same user.
 
-For the same user, `person.id` in L1 equals their kratosId, but `person.id` in L2 may be a different identifier (trading account). Use `person.kratosId` as the stable identity.
+`person.id` is a key under which **different identifiers** are exposed depending on provider and auth level — not a single value that "changes":
+- At L1, `person.id` carries the **same value** as `kratosId` (the Kratos identity UUID).
+- At L2, `person.id` carries a **separate identifier** — the client/trading account GUID (internally called "Global ID" because it lives in the Global DB).
+- For AD users, `person.id` is the AD GUID; `kratosId` is absent.
+
+Use `person.kratosId` (camelCase in JWT / `kratos_id` snake_case in introspection response) as the stable cross-level identity for Kratos users. Use `person.id` only for AD users (where `kratosId` doesn't exist).
+
+### Do NOT Call person.id "the Global ID of the User"
+
+**Wrong**: Comments, docs, or conversation framing `person.id` as "the global ID of the user" without qualifying which provider/level you mean.
+
+The phrase is internally accurate **only at L2** (where the value comes from the Global DB) and actively misleads readers into using `person.id` as a stable cross-level identity. Even experienced engineers slip into this framing because the L2 backend names it that way. The framing causes:
+- Storing `person.id` as the user primary key, which breaks on L1↔L2 transitions
+- Treating `person.id` as a global cross-product identity, which it is not
+- Confusing readers about which identifier is actually stable
+
+Be explicit instead: "`person.id` at L1 is the same value as `kratosId`; at L2 it is the client account GUID; for stable cross-level matching use `kratosId`."
 
 ### Do NOT Rely on Kratos whoami as Primary Data Source
 
@@ -597,15 +666,14 @@ function handleLogin(request):
     // Note: introspection API uses snake_case (kratos_id), not camelCase (kratosId)
     stableId = person.kratos_id ?? person.id
 
-    // Step 3: Find or create internal user
+    // Step 3: Find or create internal user — store ONLY the external identity key
+    //         Do NOT copy email/name/login/phone into your DB unless you have a
+    //         specific, justified reason — see "Storing User Data — Trade-offs"
     internalUser = findUserByExternalId(stableId)
     if not internalUser:
-        internalUser = createUser({
-            externalId: stableId,
-            email: person.email,
-            name: person.name,
-            login: person.login
-        })
+        internalUser = createUser({ externalId: stableId })
+        // Display data (name, email) — fetch live from token / get-identity when
+        // needed, or accept it from the frontend for non-critical display surfaces
 
     // Step 4: Issue internal session
     internalToken = issueJWT({ userId: internalUser.id, ... })
@@ -617,7 +685,52 @@ function handleLogin(request):
 - **The frontend never stores or forwards the raw GA token for subsequent API calls** — after the exchange, it uses the internal token issued by your backend.
 - **The exchange endpoint is the only place** where the GA token is validated. All other backend endpoints validate the internal token using your own middleware.
 - **User matching**: Use `person.kratosId` (Kratos) or `person.id` (AD) as the external identity key. See "person.id Semantics" above.
+- **Store the identity key, not the contact data** — see "Storing User Data — Trade-offs" below for why duplicating email/name/login into your own DB is usually a bad idea.
 - **Do not skip the exchange**: Passing the raw GA token to every API call and validating it every time is inefficient and couples your entire backend to the TxAuth introspection service.
+
+## Storing User Data — Trade-offs
+
+**The default position should be: do NOT copy user PII (email, name, login, phone) into your own database.** TxGlobalAuth / Kratos / AD is the source of truth. Your system is a consumer, not an owner, of identity data. Copying it creates more problems than it solves.
+
+**Store only**:
+- `kratosId` (Kratos users) or `person.id` (AD users) — as the external identity key
+- Internal data your product genuinely owns (preferences, business state, audit records keyed by `kratosId`)
+
+**Fetch live when needed**:
+- Display name in UI → from frontend `session.person` (already decoded by widget) or backend `get-identity`
+- Outbound email/SMS → resolve via `get-identity` at send time, do not rely on a stored copy
+
+### Why Storing PII Is Usually Wrong
+
+1. **Update timing problem.** When does your stored copy refresh? Most systems refresh "on next login" — which means your copy is stale between logins. Users change email, phone, name regularly; you will have wrong data and won't know it. Refreshing on every request defeats the point of caching at all.
+
+2. **Matching by stored PII is dangerous — never do this.** Using stored `email`, `login`, or `phone` as a matching key against incoming auth events is an anti-pattern across all providers:
+    - **AD `login` (sAMAccountName)** can change (renames, mergers, marriage). Same human, different login.
+    - **AD `email`** is a free-text field in AD — not validated, can be set to anything an admin (or an attacker with directory write access) chooses. Using it as an identity anchor is an authorization vulnerability.
+    - **Kratos `email`/`phone`** can be added, removed, or replaced via the widget — they are not stable.
+    - The only safe match keys are `kratosId` (Kratos) or `person.id` AD GUID (AD). Both are opaque and not user-modifiable.
+
+3. **Architectural drift over time.** Even if you store PII purely as a "display hint" today, a future engineer joining the project will see those columns populated and reasonably assume they are authoritative. They will write features that depend on the stored email being correct, send marketing email to it, or use the stored login in audit logs as proof of identity. **Display hints decay into authoritative facts.** Removing them later is hard because by then real code depends on them.
+
+4. **PII surface area and compliance.** Every additional copy of personal data is a copy you are responsible for protecting, expiring, and deleting on request. The fewer copies, the smaller the attack surface and the less compliance burden.
+
+### When Storing PII Is Acceptable
+
+There are legitimate cases — but they should be deliberate, not default:
+
+- **Admin tooling / analytics dashboards** where displaying "Jane Doe" is genuinely more useful than `kratos_id=4f3a...`. Acceptable, but mark the data as a snapshot (with a timestamp), never use it for matching, and refresh it on every observation rather than caching long-term.
+- **First-contact data** captured at registration that the identity provider does not preserve (e.g. social-login avatar, social profile name from Facebook/Google). Store it, but tag it as "registration-time snapshot from provider X", not as the user's current identity.
+- **Audit / compliance records** where you must record what email/name/login was used at the time of an action. Store it as a frozen historical fact tied to the audit event, not as the user's current contact data.
+
+In all these cases, the stored data is a **secondary copy** annotated with provenance and time. The **primary source remains TxGlobalAuth/Kratos/AD**, looked up live when current data is needed.
+
+### When You See Stored PII in Existing Code
+
+If you encounter a `users` table with `email`, `name`, `login` columns populated from token data:
+
+1. Check whether anything actually reads those columns. Often they were added defensively and nothing depends on them — drop them.
+2. Check whether anything **matches** on those columns (joins, lookups). If yes, this is a bug — replace with `kratosId` / `person.id` matching.
+3. If display tooling depends on them, add a refresh-on-read path via `get-identity` and stop relying on the stored copy as truth.
 
 ## Receiving Data from the Frontend
 

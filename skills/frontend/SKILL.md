@@ -74,18 +74,20 @@ Note: `isAuthenticatedUserAccount()` returns `true` for both Kratos L1 and AD-au
 
 | Field | Kratos L1 special (deprecated) | Kratos L1 | Kratos L2 | AD | Anonymous |
 |-------|------------------------|-------------------|-----------|-----|-----------|
-| `person.id` | kratosId | kratosId | clientGUID (changes!) | AD GUID | deviceUUID |
+| `person.id` | = `kratosId` (same value) | = `kratosId` (same value) | `clientGUID` (different identifier — see below) | AD GUID | deviceUUID |
 | `person.kratosId` | present | present | present | **absent** | **absent** |
-| `person.email` | **present** | **absent** | may be present | present | **absent** |
+| `person.email` | **present**, unmasked | **absent** | may be present, unmasked | present, unmasked | **absent** |
 | `person.name` | may be absent | may be absent | present | present | **absent** |
 | `person.lastname` | may be absent | may be absent | present | present | **absent** |
 | `person.login` | absent | absent | may be present | sAMAccountName | **absent** |
-| `person.verifiedPhone` | absent | absent | may be present | may be present | **absent** |
+| `person.verifiedPhone` | absent | absent | may be present, unmasked | may be present, unmasked | **absent** |
+
+> **Note on masking**: Values inside `session.person` (token payload) are **never masked** — `person.email` is `john.doe@example.com`, not `j***@example.com`. Masking is only applied by the separate `getIdentifiers()` widget method, which returns intentionally masked values for in-app display (see "User Profile" section below). Do not confuse the two surfaces.
 
 **Key takeaways:**
 - **Kratos L1** — the most common mode for consumer products — has **no email, no name, no login** in the token. Only `person.id` and `person.kratosId` are reliable. If you need a verified email, use `requireEmail()` — it checks Kratos identity first and only prompts the user if the email is missing; after it resolves, the identity is updated and `getIdentifiers()` returns the email. Alternatively, obtain the email through the backend via `get-identity`.
 - **Kratos L1 special (deprecated)** — a legacy provider configuration where `person.email` IS present in the L1 token. If you encounter an integration that reads email from L1 tokens and it works — the product may be using this deprecated provider. New integrations should NOT depend on this behavior.
-- **person.id changes meaning** between L1 and L2 for Kratos users — see "person.id vs person.kratosId" in the `global-auth:backend` skill.
+- **`person.id` semantics differ between L1 and L2 for Kratos users**: at L1 it carries the **same value as `kratosId`**; at L2 it carries a **different identifier** (a client/trading account GUID, internally called the "Global ID"). This is not "the field changing value" — different identifiers happen to be exposed under the same key. See "person.id Semantics" in the `global-auth:backend` skill.
 - **AD users** have no `kratosId` — use `person.id` (AD GUID) as the identifier.
 - **Token fields are scalars, Kratos stores collections**: `person.email` and `person.verifiedPhone` in the token are single values, but a Kratos identity may have **multiple** emails and phones. The token only contains one (if any). To check whether a user has a verified email or phone **at all**, use `getIdentifiers()` (returns masked values) or `getVerificationInfo()` — do not rely on token fields for presence checks.
 - **Reading email/phone from token fields** is not strictly wrong if the value happens to be present, but it is **fragile** — the field may be absent depending on provider and auth level (see table above). If you see code reading `person.email` or `person.verifiedPhone` from the token, **raise the question**: is this field guaranteed to be present for this product's provider type? If not, consider `requireEmail()` / `requirePhone()` (idempotent — resolves instantly if the identity already has the data, otherwise prompts and saves to Kratos) or a backend `get-identity` call.
@@ -478,7 +480,7 @@ The callback fires in several distinct scenarios. Your handler must distinguish 
 
 **Identity tracking**: To distinguish "token refresh" from "account switch", compare `person.id` from the new token against the `person.id` you stored from the previous callback. Use `person.id` (always present, immutable within a session) — not `person.login` or `person.email`, which may be absent for some providers.
 
-> **Important nuance**: `person.id` is stable for detecting account switches within a session, but its **meaning changes across auth levels** — at L1 it equals `kratosId`, at L2 it becomes a client account GUID. If you persist `person.id` to your backend for long-term user tracking, use `person.kratosId` instead (stable across L1→L2 transitions). See "Data Availability by Provider and Auth Level" above and the `global-auth:backend` skill for details.
+> **Important nuance**: `person.id` is fine for detecting account switches **within a single session**, but it is **not the same identifier across L1↔L2 for Kratos users** — at L1 it carries the same value as `kratosId`, at L2 it carries a separate client account GUID. If you persist user identity to your backend for long-term tracking, store `person.kratosId` instead (stable across L1↔L2). See "Data Availability by Provider and Auth Level" above and the `global-auth:backend` skill for details.
 
 **React implementation sketch** (extends the basic example above):
 
@@ -561,7 +563,7 @@ For AD-type providers (`AD_OFFICE`, `AD_OFFICE_OTP`, `AD_OFFICE_SMS`, `AD_WTE`, 
 
 **Identity tracking field**: Use `person.id` to track which user is currently authenticated **within a single session** (e.g., to detect account switches in `subscribeJWT`). Do not use `person.login` or `person.email` — these may be absent for some provider types (e.g., Kratos L1 has no login or email).
 
-> **Warning**: `person.id` is **not stable across authentication levels**. For the same Kratos user, `person.id` equals `kratosId` at L1, but changes to a client/trading account GUID at L2. If your app stores `person.id` and the user later upgrades to L2, the stored ID will no longer match. **Use `person.kratosId` as the stable primary key for Kratos users.** For AD users, `person.id` (AD GUID) is stable — but `kratosId` is absent. See the `global-auth:backend` skill — section "person.id Semantics" and "Data Availability by Provider and Auth Level".
+> **Warning**: `person.id` is **not the same identifier across L1↔L2 for Kratos users** — different values are exposed under the same key. At L1, `person.id` carries the same value as `kratosId`. At L2, `person.id` carries a different identifier (client/trading account GUID, "Global ID"). If your app persists `person.id` from an L1 session as the user's primary key and the user later transitions to L2, the stored value will no longer match. **Use `person.kratosId` as the stable cross-level primary key for Kratos users.** For AD users, `person.id` (AD GUID) is the only available stable identifier — `kratosId` is absent. See the `global-auth:backend` skill — section "person.id Semantics" and "Data Availability by Provider and Auth Level".
 
 **AD provider variants**:
 - `AD_OFFICE` — standard AD authentication (username + password)
@@ -799,19 +801,23 @@ interface Session {
 }
 
 interface PersonData {
-    id: string;           // WARNING: semantics change by provider! L1=kratosId, L2=clientGUID, AD=AD GUID
-                          // Use for session-level identity tracking only. See "Data Availability" table.
-                          // Anti-pattern: using person.id as a stable primary key — it CHANGES when user transitions L1→L2
+    id: string;           // WARNING: different identifiers under the same key, depending on provider.
+                          //   L1 Kratos: same value as kratosId (the Kratos UUID)
+                          //   L2 Kratos: a separate identifier (client/trading account GUID, "Global ID")
+                          //   AD:        AD GUID (objectGUID)
+                          // Anti-pattern: using person.id as the cross-level primary key for Kratos users —
+                          //   the L1 person.id and L2 person.id are different identifiers for the same user.
+                          //   Use person.kratosId instead for Kratos. AD has no kratosId — use person.id.
     name?: string;        // First name — ABSENT for Kratos L1
     lastname?: string;    // Last name — ABSENT for Kratos L1
     middlename?: string;  // Patronymic (AD-specific, may be absent)
-    email?: string;       // ABSENT for Kratos L1. Do NOT use for identity comparison.
+    email?: string;       // ABSENT for Kratos L1. Unmasked when present. Do NOT use for identity comparison.
     login?: string;       // AD sAMAccountName or Kratos login — ABSENT for L1. Do NOT use for identity comparison.
-    verifiedPhone?: string; // Phone — ABSENT for L1
+    verifiedPhone?: string; // Phone — ABSENT for L1. Unmasked when present.
     gender?: number;
-    kratosId?: string;    // STABLE identity for Kratos users (same across L1→L2). Absent for AD.
-                          // For Kratos: use this as primary key, not person.id
-                          // For AD: use person.id (AD GUID) — kratosId is absent
+    kratosId?: string;    // STABLE cross-level identity for Kratos users (same value at L1 and L2). Absent for AD.
+                          // For Kratos: use this as the primary key, not person.id.
+                          // For AD: use person.id (AD GUID) — kratosId is absent.
 }
 
 interface TokenProvider {
@@ -1073,9 +1079,9 @@ When reviewing or refactoring existing TxGlobalAuth code, the integration is oft
 
 **Diagnosis**: The app stores `person.id` as the user identifier in its database and correlates sessions by matching it.
 
-**What will break**: When the user transitions from L1 to L2, `person.id` changes from `kratosId` to a client account GUID. The app creates a duplicate user record or fails to find the existing one.
+**What will break**: When the user transitions from L1 to L2, `person.id` no longer carries the same value — at L1 it is the `kratosId`, at L2 it is a different identifier (client/trading account GUID). The app creates a duplicate user record or fails to find the existing one.
 
-**Fix**: Use `person.kratosId` as the stable key for Kratos users. For AD users (where `kratosId` is absent), `person.id` is stable and safe to use. See "person.id Semantics" in the `global-auth:backend` skill.
+**Fix**: Use `person.kratosId` as the stable key for Kratos users. For AD users (where `kratosId` is absent), `person.id` is the only available stable identifier. See "person.id Semantics" in the `global-auth:backend` skill.
 
 ### Symptom: Email Extraction Functions That Always Return Null
 
