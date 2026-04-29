@@ -84,14 +84,68 @@ The `session.Session` contains the `person` field with the same structure descri
 
 **Deployment model**: There is **no communal/shared TxAuth agent**. Each project must deploy its own agent instance(s). The agent runs as a local sidecar or co-located process on each backend instance. It connects upstream to the TxAuth server, caches validation results, and provides sub-millisecond local validation. This is why gRPC is the standard inside the perimeter — calls to the local agent have near-zero latency.
 
-**How to get your own TxAuth agent deployed:**
-1. **Submit a support ticket** to the technical department to provision TxAuth agent instances for your project
-2. **Deploy a Consul agent** alongside your TxAuth agents — the TxAuth agent **must** register itself in Consul (this is an architecture requirement from the TxAuth Server team, used for agent monitoring). You will need a Consul token for registration.
-3. **Configure your backend** to connect to your local agent's gRPC endpoint (typically `localhost:<port>` or a sidecar address within your deployment)
+#### Deployment Journey — Two Steps
 
-> **This is an infrastructure process, not just code.** Plan for agent provisioning early in the project timeline. The code integration is straightforward once agents are deployed — see "Integration Setup" below.
+The path from "no agent" to "first successful gRPC call" is **two-stage**, with different owners. There is **no centralized install service** for the TxAuth Agent — tickets that ask ops to "install the agent" are routinely closed with "installation done by server owner, dev provides instructions".
 
-> For background reading: internal wiki pages on "TXAuth Agent (Linux)" cover agent installation details.
+**Step 1 — Ops installs Consul agent + issues ACL token (their responsibility)**
+
+Submit a ticket to the technical department on the corporate portal. The ticket asks for:
+- Type of work: software installation
+- Software: **Consul** (and mention you also need TxAuth Agent — ops will install Consul; TxAuth Agent will be your responsibility, see Step 2)
+- Target server hostname (Linux or Windows) where your service runs
+- Justification — typically: "Need a Consul agent and an authorization agent on this server to implement user authentication for the {your-product} application"
+
+Ops outcome: Consul agent installed on the host, ACL token issued, server access granted to you.
+
+> **Reference example**: An actual ticket following this pattern is recorded in `docs/tasks/txauth-agent-ops-gap.md` (REQ-522528). Use it as a template.
+
+**Step 2 — You install and configure TxAuth Agent (your responsibility)**
+
+You need admin/root on the target host (granted in Step 1).
+
+1. **Download the artifact** for your platform from the corporate Artifactory under the path `cb-maven/ci/txauth/agent/{VERSION}/`. Pick the variant that matches your platform:
+   - **Linux** → `docker-compose.*.yml` (run via Docker / docker-compose)
+   - **Kubernetes** → `deployment.*.yml`
+   - **Windows** → `txauth.agent.service.*.exe` (runs as a Windows service, see internal wiki page "TXAuth Agent (Windows)")
+
+2. **Configure via CLI flags** in the `command` block of the deployment artifact (Linux/K8s) or as `-install` arguments (Windows). Minimum required flags:
+   - `-this-service` — agent's own service name in Consul (e.g. `prd-{product}01-txauth-agent`)
+   - `-remote-service` — upstream auth server name (see "Environment and Variant Reference" table below for the value matching your environment + variant)
+   - `-port` — defaults to `4811`. Override only if conflict.
+   - `-dc` — datacenter override. Inherited from the local Consul agent — only set if `-remote-service` lives in a different DC than the host.
+   - ACL is also inherited from the Consul agent — no separate flag needed.
+
+3. **Windows install example**:
+   ```
+   txauth.agent.service.exe -install \
+     -this-service=pp-{product}01-txauth-agent \
+     -remote-service=pp-ftr01-txauth-server \
+     -readonly-tokens-disabled=false
+   ```
+
+4. **Full parameter reference**: internal wiki page "TXAuth Agent — CLI parameters". Background docs: internal wiki page "TXAuth Agent". Changelog: internal wiki page "TXAuth Agent Changelog".
+
+> **This is an infrastructure process, not just code.** Plan agent provisioning early in the project timeline. The code integration is straightforward once the agent is up — see "Integration Setup" below.
+
+#### Verifying the Agent Before Writing Code
+
+Before touching backend code, confirm the agent is healthy. Two checks:
+
+**1. Consul UI** — open `https://consul.entapp.work/ui/`, select your datacenter, and search for your agent's service name (the value of `-this-service`):
+- 🟢 **Green** — agent is registered and reachable, ACL accepted, upstream auth server is reachable.
+- 🔴 **Red** — typical causes: misconfigured `-remote-service` / `-dc`, ACL token missing or wrong, upstream auth server unreachable from this host. Read the failure reason in Consul; do not proceed until green.
+
+**2. Direct gRPC smoke test** with a real JWT (e.g. one captured from the frontend in DevTools):
+```bash
+grpcurl --plaintext \
+  -d '{"token": "PASTE_JWT_HERE"}' \
+  HOST:PORT \
+  grpc.txauth.JwtAgent/Check
+```
+Replace `HOST:PORT` with `localhost:4811` if running on the same host as the agent, or with the resolved Consul host:port (see "Connection Patterns" below). A successful call returns the decoded `session` — that proves the full path: token → agent → upstream auth → cached response.
+
+If both checks pass, the operational side is ready and any failures from here on are in your client code.
 
 **Service discovery**: TxAuth agents register in Consul for monitoring purposes. To browse currently running agents: open Consul UI at `https://consul.entapp.work/ui/` → select the datacenter for your environment → search for `*-txauth-agent` (e.g., `prd-*-txauth-agent` for production, `dev-*` for development).
 
@@ -208,6 +262,43 @@ modules/
 ```
 
 **Other languages** (PHP, Node.js, Java, Python, etc.): Some languages may have internal wrapper libraries available — check with the Tx Auth team for your stack. For any language with gRPC support, you can generate client stubs from the proto file (`jwt_agent.proto`) using the standard `protoc` compiler with language-specific plugins. The proto source is in the corporate Bitbucket at `projects/SER/repos/proto-repo/browse/grpc-txauth/src/main/proto/grpc/txauth/jwt_agent.proto`.
+
+#### Connection Patterns — `localhost` vs Consul Discovery
+
+The backend client can reach the agent in two ways. Choose based on the deployment topology:
+
+**Pattern A — Direct address (`localhost:4811` or `host:port`)**
+
+Use when the agent runs on the same host as the backend (sidecar or co-located process). The connection string is hardcoded:
+
+```go
+conn, _ := grpc.NewClient("localhost:4811", grpc.WithTransportCredentials(insecure.NewCredentials()))
+```
+
+Simple, but a single agent is a single point of failure for that backend instance.
+
+**Pattern B — Consul service discovery (recommended for production HA)**
+
+Operations convention is to deploy **at least 2 agent instances** under the same Consul service name for redundancy. The client resolves live hosts from Consul's catalog API and picks one:
+
+```
+GET https://consul.entapp.work/v1/catalog/service/{agent-service-name}?dc={datacenter}
+```
+
+Returns a list of `{Address, ServicePort}` for every healthy agent. The service implements its own selection (random, round-robin, sticky-with-failover) — the agent itself does **not** proxy this.
+
+> **Important**: Consul-based resolution must be implemented inside the service. There is no built-in "smart client" — `grpc.NewClient("agent-service-name")` will not magically work.
+
+#### Operational Recommendations
+
+| Concern | Recommendation | Source |
+|---|---|---|
+| **gRPC timeout** | `5s` per `Check` call | Cache hit returns in microseconds; cache miss calls upstream auth server (normally <2s, up to 5s under load). Happy-path-only would be 3–3.5s; 5s leaves headroom. |
+| **Cache TTL** | The agent has an internal cache that refreshes every **5 minutes** | Two consecutive `Check` calls for the same token within 5 min are essentially free. |
+| **Connection lifetime** | Reuse one long-lived `grpc.NewClient` per process. Creating a new connection per request is unnecessary overhead. | Both patterns work according to ops, but reuse is the standard gRPC convention. |
+| **Reconnect on agent restart** | **The service is responsible for reconnect logic** — gRPC keepalive alone is not sufficient guidance from ops. Recommended pattern: on `UNAVAILABLE`/timeout, query Consul catalog API → pick another live agent host → reconnect. | Pattern B (HA) implicitly provides this; Pattern A (single agent) means the backend is unavailable while the agent restarts. |
+| **Failure handling (fail-closed)** | After exhausting reconnection attempts, **reject the incoming request** (e.g. HTTP 401). Do not fall back to local JWT parsing, do not allow with degraded trust. | Ops confirms: at `UNAVAILABLE`/timeout, rejecting with a clear status code is acceptable. Reconnect-first is preferred over fail-immediately. |
+| **HA topology** | Deploy **≥2 agent instances** under one Consul service name in production. | Ops convention. Single-agent deployments are acceptable for dev/single-host setups but not recommended for production. |
 
 ### Approach 2: Kratos JWT Introspection (HTTP)
 
