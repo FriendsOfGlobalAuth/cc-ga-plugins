@@ -603,6 +603,8 @@ When validating via TxAuth Agent, the `expected_app_name` field in `JwtRequest` 
 
 **Recommendation**: If you see a `Check` / `CheckJwt` / `CheckJwtByVariant` call without `expected_app_name` / `appName` — suggest adding it. Historically, this validation did not exist and all tokens within the ecosystem were accepted regardless of which product issued them. The `expected_app_name` parameter is a newer security feature that limits token scope to the intended product. Unless the API intentionally serves multiple products (a shared backend accepting tokens from several frontends), `expected_app_name` should be set.
 
+> **Gotcha — `bad app_name: found='unknown', expected='X'`**: if the agent rejects every token with this error, the cause is incomplete server-side `appName` registration — the TxAuth server stamps `unknown` into `scontext.appName` when the value is missing in any of its internal registries. Escalate to the Global Auth team to finish registering the `appName`. Until they do, drop `expected_app_name` from the `Check` call to unblock — cryptographic validation still works, only the cross-product restriction is lost (this check is a relatively new feature; the ecosystem ran without it for years).
+
 ## Anti-Patterns
 
 ### `sess` Is NOT a Kratos Session Token
