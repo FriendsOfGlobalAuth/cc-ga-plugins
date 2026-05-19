@@ -1,0 +1,43 @@
+{
+  "name": "global-auth",
+  "version": "1.9.0",
+  "description": "Global Auth plugins for Codex. Skills: global-auth:frontend for TxGlobalAuth widget integration and global-auth:backend for JWT validation and session data extraction.",
+  "author": {
+    "name": "Dmitry Vorobyev",
+    "url": "https://github.com/VoDmAl"
+  },
+  "homepage": "https://github.com/FriendsOfGlobalAuth/cc-ga-plugins",
+  "repository": "https://github.com/FriendsOfGlobalAuth/cc-ga-plugins",
+  "license": "MIT",
+  "keywords": [
+    "global-auth",
+    "authentication",
+    "txglobalauth",
+    "frontend",
+    "backend",
+    "widget",
+    "jwt",
+    "kratos"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Global Auth",
+    "shortDescription": "TxGlobalAuth frontend and backend integration help.",
+    "longDescription": "Codex skills for integrating TxGlobalAuth in frontend applications and backend services, including widget initialization, authentication flows, token management, JWT validation, session data extraction, and common integration pitfalls.",
+    "developerName": "Dmitry Vorobyev",
+    "category": "Development",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/FriendsOfGlobalAuth/cc-ga-plugins",
+    "brandColor": "#3F9126",
+    "composerIcon": "./assets/logo.svg",
+    "logo": "./assets/logo.svg",
+    "defaultPrompt": [
+      "Audit this TxGlobalAuth integration.",
+      "Add TxGlobalAuth login to this app.",
+      "Review backend JWT validation."
+    ]
+  }
+}

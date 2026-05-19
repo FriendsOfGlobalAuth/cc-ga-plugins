@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500" width="500" height="500">
+  <defs>
+    <linearGradient id="shieldGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#1a212e;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#0e131b;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="accentGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#ffc759;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#f9af1e;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+
+  <!-- Background circle -->
+  <circle cx="250" cy="250" r="240" fill="#F7FAFC" stroke="#E2E8F0" stroke-width="2"/>
+
+  <!-- Shield shape -->
+  <path d="M250 60 L400 140 L400 280 Q400 380 250 440 Q100 380 100 280 L100 140 Z"
+        fill="url(#shieldGrad)" stroke="#141a24" stroke-width="3"/>
+
+  <!-- Inner shield border -->
+  <path d="M250 85 L380 155 L380 275 Q380 365 250 418 Q120 365 120 275 L120 155 Z"
+        fill="none" stroke="#3f9126" stroke-width="2" opacity="0.6"/>
+
+  <!-- Globe - horizontal lines -->
+  <circle cx="250" cy="240" r="70" fill="none" stroke="#69b449" stroke-width="1.5" opacity="0.35"/>
+  <ellipse cx="250" cy="240" rx="70" ry="25" fill="none" stroke="#69b449" stroke-width="1.5" opacity="0.35"/>
+  <ellipse cx="250" cy="240" rx="70" ry="50" fill="none" stroke="#69b449" stroke-width="1.5" opacity="0.25"/>
+
+  <!-- Globe - vertical ellipse (meridian) -->
+  <ellipse cx="250" cy="240" rx="25" ry="70" fill="none" stroke="#69b449" stroke-width="1.5" opacity="0.35"/>
+
+  <!-- Lock body -->
+  <rect x="225" y="225" width="50" height="40" rx="5" fill="url(#accentGrad)"/>
+
+  <!-- Lock shackle -->
+  <path d="M235 225 L235 210 Q235 195 250 195 Q265 195 265 210 L265 225"
+        fill="none" stroke="#ffc759" stroke-width="5" stroke-linecap="round"/>
+
+  <!-- Keyhole -->
+  <circle cx="250" cy="240" r="6" fill="#0e131b"/>
+  <rect x="247" y="243" width="6" height="10" rx="2" fill="#0e131b"/>
+
+  <!-- Three people silhouettes (friends) - bottom of shield -->
+  <!-- Center person -->
+  <circle cx="250" cy="330" r="12" fill="#3f9126"/>
+  <path d="M232 355 Q232 342 250 342 Q268 342 268 355" fill="#3f9126"/>
+
+  <!-- Left person -->
+  <circle cx="210" cy="338" r="10" fill="#69b449" opacity="0.8"/>
+  <path d="M195 360 Q195 349 210 349 Q225 349 225 360" fill="#69b449" opacity="0.8"/>
+
+  <!-- Right person -->
+  <circle cx="290" cy="338" r="10" fill="#69b449" opacity="0.8"/>
+  <path d="M275 360 Q275 349 290 349 Q305 349 305 360" fill="#69b449" opacity="0.8"/>
+
+  <!-- "GA" text -->
+  <text x="250" y="145" text-anchor="middle" font-family="Arial, Helvetica, sans-serif"
+        font-size="48" font-weight="bold" fill="#ffffff" letter-spacing="8">GA</text>
+</svg>
