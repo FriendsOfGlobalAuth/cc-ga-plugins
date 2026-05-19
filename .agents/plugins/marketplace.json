@@ -1,0 +1,21 @@
+{
+  "name": "ga-codex-marketplace",
+  "interface": {
+    "displayName": "Global Auth Codex Plugins"
+  },
+  "plugins": [
+    {
+      "name": "global-auth",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/FriendsOfGlobalAuth/cc-ga-plugins.git",
+        "ref": "main"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Development"
+    }
+  ]
+}
