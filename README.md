@@ -70,8 +70,8 @@ when navigating to dashboard.example.com.
 ```
 cc-ga-plugins/
 ├── .agents/
-│   └── plugins
-│       └── marketplace.json # Codex Marketplace registry
+│   └── plugins/
+│       └── marketplace.json # Codex marketplace registry
 ├── .claude-plugin/
 │   ├── marketplace.json     # Claude Code Marketplace registry
 │   └── plugin.json          # Claude Code manifest
