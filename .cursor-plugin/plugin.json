@@ -1,0 +1,30 @@
+{
+  "name": "global-auth",
+  "displayName": "Global Auth",
+  "version": "1.9.0",
+  "description": "Global Auth plugins for Cursor. Skills: global-auth:frontend for TxGlobalAuth widget integration and global-auth:backend for JWT validation and session data extraction.",
+  "author": {
+    "name": "Dmitry Vorobyev"
+  },
+  "homepage": "https://github.com/FriendsOfGlobalAuth/cc-ga-plugins",
+  "repository": "https://github.com/FriendsOfGlobalAuth/cc-ga-plugins",
+  "license": "MIT",
+  "logo": "./assets/logo.svg",
+  "keywords": [
+    "global-auth",
+    "authentication",
+    "txglobalauth",
+    "frontend",
+    "backend",
+    "widget",
+    "jwt",
+    "kratos"
+  ],
+  "category": "developer-tools",
+  "tags": [
+    "authentication",
+    "frontend",
+    "backend"
+  ],
+  "skills": "./skills/"
+}

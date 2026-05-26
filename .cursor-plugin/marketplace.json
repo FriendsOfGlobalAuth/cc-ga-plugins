@@ -1,0 +1,17 @@
+{
+  "name": "ga-cursor-marketplace",
+  "owner": {
+    "name": "Dmitry Vorobyev"
+  },
+  "metadata": {
+    "description": "Global Auth Cursor plugin collection for TxGlobalAuth integration workflows.",
+    "version": "1.9.0"
+  },
+  "plugins": [
+    {
+      "name": "global-auth",
+      "source": ".",
+      "description": "Global Auth plugins for Cursor. Skills: global-auth:frontend for TxGlobalAuth widget integration and global-auth:backend for JWT validation and session data extraction."
+    }
+  ]
+}

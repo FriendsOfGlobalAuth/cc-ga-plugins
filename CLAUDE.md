@@ -4,7 +4,7 @@
 
 This repository contains Claude Code plugins for Global Auth (TxGlobalAuth) — a proprietary authentication widget deployed across multiple products and companies.
 
-This repository also serves as the Claude marketplace (`ga-claude-code-marketplace`) and Codex marketplace (`ga-codex-marketplace`). GitHub source: `FriendsOfGlobalAuth/cc-ga-plugins`.
+This repository also serves as the Claude marketplace (`ga-claude-code-marketplace`), Codex marketplace (`ga-codex-marketplace`), and Cursor marketplace (`ga-cursor-marketplace`). GitHub source: `FriendsOfGlobalAuth/cc-ga-plugins`.
 
 ## Language
 
@@ -16,6 +16,8 @@ Official language: **English**.
 - `.claude-plugin/plugin.json` — Claude Code plugin manifest
 - `.codex-plugin/plugin.json` — Codex plugin manifest
 - `.agents/plugins/marketplace.json` — Codex marketplace registry
+- `.cursor-plugin/plugin.json` — Cursor plugin manifest
+- `.cursor-plugin/marketplace.json` — Cursor marketplace registry
 - `qwen-extension.json` — Qwen Code extension manifest
 - `QWEN.md` — Qwen Code context file
 - `skills/{skill-name}/SKILL.md` — skill definitions (shared by all platforms)
@@ -32,14 +34,14 @@ GitHub source: `FriendsOfGlobalAuth/cc-ga-plugins`.
 1. Create `skills/{skill-name}/SKILL.md`
 2. Include YAML frontmatter: `name`, `description`
 3. Update README.md skills table
-4. Bump version in `.claude-plugin/plugin.json`, `.codex-plugin/plugin.json`, `qwen-extension.json`, and `.claude-plugin/marketplace.json` (both top-level and plugin entry)
+4. Bump version in `.claude-plugin/plugin.json`, `.codex-plugin/plugin.json`, `.cursor-plugin/plugin.json`, `.cursor-plugin/marketplace.json`, `qwen-extension.json`, and `.claude-plugin/marketplace.json` (both top-level and plugin entry)
 5. Update marketplace plugin entry in `.claude-plugin/marketplace.json` if skill name or description changed
 
 ## Updating Skills
 
 1. Edit `skills/{skill-name}/SKILL.md`
 2. Preserve YAML frontmatter structure
-3. Bump patch version in `.claude-plugin/plugin.json`, `.codex-plugin/plugin.json`, `qwen-extension.json`, and `.claude-plugin/marketplace.json` (both top-level and plugin entry)
+3. Bump patch version in `.claude-plugin/plugin.json`, `.codex-plugin/plugin.json`, `.cursor-plugin/plugin.json`, `.cursor-plugin/marketplace.json`, `qwen-extension.json`, and `.claude-plugin/marketplace.json` (both top-level and plugin entry)
 4. If skill name or description changed — update README.md skills table and marketplace plugin entry in `.claude-plugin/marketplace.json`
 
 ## Skill Description Quality

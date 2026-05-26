@@ -1,8 +1,8 @@
-# global-auth — Claude Code, Qwen Code & Codex Plugin
+# global-auth — Claude Code, Qwen Code, Codex & Cursor Plugin
 
-Global Auth (TxGlobalAuth) integration skills for Claude Code, Qwen Code and Codex.
+Global Auth (TxGlobalAuth) integration skills for Claude Code, Qwen Code, Codex and Cursor.
 
-This repository also serves as the Claude marketplace (`ga-claude-code-marketplace`) and Codex marketplace (`ga-codex-marketplace`).
+This repository also serves as the Claude marketplace (`ga-claude-code-marketplace`), Codex marketplace (`ga-codex-marketplace`) and Cursor marketplace (`ga-cursor-marketplace`).
 
 ## Available Skills
 
@@ -31,6 +31,14 @@ qwen extensions install FriendsOfGlobalAuth/cc-ga-plugins
 ```bash
 codex plugin marketplace add FriendsOfGlobalAuth/cc-ga-plugins
 codex plugin add global-auth@ga-codex-marketplace
+```
+
+### Cursor
+
+In Cursor, open an Agent chat and run:
+
+```bash
+/add-plugin global-auth@https://github.com/FriendsOfGlobalAuth/cc-ga-plugins
 ```
 
 ## Usage Examples
@@ -77,6 +85,9 @@ cc-ga-plugins/
 │   └── plugin.json          # Claude Code manifest
 ├── .codex-plugin/
 │   └── plugin.json          # Codex manifest
+├── .cursor-plugin/
+│   ├── marketplace.json     # Cursor Marketplace registry
+│   └── plugin.json          # Cursor manifest
 ├── qwen-extension.json      # Qwen Code manifest
 ├── CLAUDE.md                # Claude Code context
 ├── QWEN.md                  # Qwen Code context
