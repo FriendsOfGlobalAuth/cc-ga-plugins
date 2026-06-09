@@ -10,6 +10,7 @@ This repository also serves as the Claude marketplace (`ga-claude-code-marketpla
 |-------|---------|-------------|
 | frontend | `/global-auth:frontend` | TxGlobalAuth widget integration — initialization, auth flows, token management, UI embedding |
 | backend | `/global-auth:backend` | JWT validation, session data extraction, and common misconceptions about the token format |
+| audit | `/global-auth:audit` | Audit TxGlobalAuth integrations end to end |
 
 ## Installation
 
@@ -92,9 +93,11 @@ cc-ga-plugins/
 ├── CLAUDE.md                # Claude Code context
 ├── QWEN.md                  # Qwen Code context
 └── skills/
-    ├── frontend/
+    ├── audit/
     │   └── SKILL.md
-    └── backend/
+    ├── backend/
+    │   └── SKILL.md
+    └── frontend/
         └── SKILL.md
 ```
 
