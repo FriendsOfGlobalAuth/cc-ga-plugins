@@ -1,8 +1,8 @@
 {
   "name": "global-auth",
   "displayName": "Global Auth",
-  "version": "1.10.0",
-  "description": "Global Auth plugins for Cursor. Skills: global-auth:frontend for TxGlobalAuth widget integration and global-auth:backend for JWT validation and session data extraction.",
+  "version": "1.11.0",
+  "description": "Global Auth plugins for Cursor. Skills: global-auth:frontend for TxGlobalAuth widget integration, global-auth:backend for JWT validation and session data extraction, and global-auth:audit for full-stack TxGlobalAuth integration audits and code reviews.",
   "author": {
     "name": "Dmitry Vorobyev"
   },
@@ -16,15 +16,22 @@
     "txglobalauth",
     "frontend",
     "backend",
+    "audit",
+    "code-review",
+    "security",
     "widget",
     "jwt",
-    "kratos"
+    "kratos",
+    "cors",
+    "session"
   ],
   "category": "developer-tools",
   "tags": [
     "authentication",
     "frontend",
-    "backend"
+    "backend",
+    "audit",
+    "security"
   ],
   "skills": "./skills/"
 }

@@ -197,7 +197,18 @@ The official wrapper is always at the path `/auth-widget/@8.js`. The hostname va
 <script src="https://libs-cdn.lime.co/auth-widget/@8.js"></script>
 ```
 
-**CDN selection**: The project should already have a CDN URL configured — check the existing codebase. If starting from scratch, ask the developer which CDN host to use for their product and region.
+### How to Choose and Document the CDN Host
+
+The path is universal; the hostname is regional. Use the host that matches the product's audience, operator chain, and data-residency expectations, and document the choice next to the configuration or in the runbook.
+
+Common host families:
+
+| Product audience / operator chain | Example host |
+|---|---|
+| CIS-aligned deployments | `https://libs-cdn.finam.ru/auth-widget/@8.js` |
+| International-aligned deployments | `https://libs-cdn.lime.co/auth-widget/@8.js` |
+
+When reviewing or building a starter, do not silently hardcode a CDN host. Add a short comment or README note that explains why the chosen host is appropriate for the `appName` and environment. If the product's canonical CDN host is unknown, ask the TxGlobalAuth team rather than copying a host from another product.
 
 **How to verify**: The URL path must end with `/auth-widget/@8.js`. The hostname doesn't matter for correctness — all CDN hosts serve the same build. What matters is that the path points to the **wrapper** (`auth-widget/@8.js`), not the **internal module** (`global-auth.v8.js`).
 
@@ -510,6 +521,35 @@ useEffect(() => {
     });
     return () => unsub();
 }, []);
+```
+
+**Vanilla JavaScript implementation sketch**:
+
+```javascript
+let lastPersonId = null;
+
+TxGlobalAuth.subscribeJWT(async (response) => {
+    if (!response) {
+        lastPersonId = null;
+        await clearSession();
+        return;
+    }
+
+    const newPersonId = response.session?.person?.id;
+    const firstLogin = lastPersonId === null;
+    const accountSwitch = lastPersonId !== null && lastPersonId !== newPersonId;
+
+    if (firstLogin || accountSwitch) {
+        if (accountSwitch) {
+            await clearSession();
+        }
+        lastPersonId = newPersonId;
+        await exchangeToken(response.token);
+        return;
+    }
+
+    // Same person: token refresh. Do not create a new backend app session.
+});
 ```
 
 ### Token Provider

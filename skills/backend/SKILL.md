@@ -352,9 +352,10 @@ Authorization: Bearer {SERVICE_TOKEN}
 
 **Validation logic**:
 1. Check HTTP status — non-2xx means introspection service is unreachable
-2. Check `active === true` — if `false` or missing, reject the token
-3. Check `person` object exists — if missing, reject
-4. Extract identity from `person` (see "person.id Semantics" below)
+2. Check strict success booleans before creating an app session. `active` must be exactly `true`. If the adapter or gateway returns `validated`, it must also be exactly `true`; do not normalize a missing or truthy string value into success.
+3. Check `person` or `session.person` exists — if missing, reject
+4. Enforce product scope with server-owned configuration before creating an app session. Plain HTTP introspect proves the token is valid, but the basic response does not by itself prove the token belongs to your product. Use an approved scoped gateway/adapter contract, returned scope fields that can be strictly compared to server config, or a documented Global Auth product-scope control. Do not accept browser-supplied `appName`, `env`, provider, tenant, or auth level as the scope authority.
+5. Extract identity from `person` (see "person.id Semantics" below)
 
 **Error handling**: Set a reasonable timeout (5–10 seconds). If the introspection service is down, fail closed (reject the request) — do not fall back to local JWT parsing.
 
@@ -555,6 +556,19 @@ Multiple L2 provider names exist depending on product and region. All share the 
 | Anonymous (device) | `person.id` (device UUID) — but no human identity is implied |
 
 **Anti-framing to avoid in code, comments, and conversation**: do not call `person.id` "the global ID of the user" without qualification. The phrase is technically correct only for L2 (where the value comes from the Global DB), and it actively misleads readers into using `person.id` as a stable cross-level identity. Be explicit: "`person.id` at L1 = `kratosId`; at L2 = client account GUID; for stable cross-level matching use `kratosId`".
+
+### Anonymous Classification Using Validator Provider
+
+Classify Anonymous sessions from the validator `provider` value, not from the mere presence of `person.id`. Anonymous tokens use `person.id` as a device UUID, so a helper that treats "has person.id" as AD, Kratos, L1/L2, customer, client, or another named account state will misclassify device sessions.
+
+Provider dictionaries can vary by adapter. Inspect fields such as `name`, `provider`, `type`, `source`, and `authProvider`, normalize them, and explicitly branch Anonymous before named-account classifications. If the classifier receives only `session` and not `provider`, change the adapter boundary so the validated provider metadata is available to the session creation code.
+
+Use this order for backend classification:
+
+1. If the validated provider says Anonymous, classify as Anonymous/device and do not create a durable human account record by default.
+2. Else if `person.kratosId` or `kratos_id` exists, classify as Kratos and use that value as the stable external identity key.
+3. Else if the validated provider says AD and `person.id` exists, classify as AD and use `person.id` as the AD GUID.
+4. Else fail closed or return a limited unauthenticated state. Do not infer a named identity from display fields, email, login, or `person.id` alone.
 
 ### Data Availability by Provider and Auth Level
 

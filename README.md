@@ -8,9 +8,9 @@ This repository also serves as the Claude marketplace (`ga-claude-code-marketpla
 
 | Skill | Command | Description |
 |-------|---------|-------------|
-| frontend | `/global-auth:frontend` | TxGlobalAuth widget integration — initialization, auth flows, token management, UI embedding |
-| backend | `/global-auth:backend` | JWT validation, session data extraction, and common misconceptions about the token format |
-| audit | `/global-auth:audit` | Audit TxGlobalAuth integrations end to end |
+| frontend | `/global-auth:frontend` | TxGlobalAuth widget integration - initialization, auth flows, token management, UI embedding |
+| backend | `/global-auth:backend` | TxGlobalAuth backend integration - JWT validation, session data extraction, TxAuth Agent, HTTP introspect, auth verify endpoints |
+| audit | `/global-auth:audit` | TxGlobalAuth full-stack integration audit and code review - auth-widget/API usage, JWT validation, token exchange, sessions, identity keys, PII, CORS, deployment posture |
 
 ## Installation
 
