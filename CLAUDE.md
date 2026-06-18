@@ -29,6 +29,10 @@ Plugin namespace: `global-auth`. Skills appear as `global-auth:{skill-name}`.
 
 GitHub source: `FriendsOfGlobalAuth/cc-ga-plugins`.
 
+## Git Workflow
+
+Commit directly to `main` — **do not create feature branches** in this repo. It is a single-maintainer marketplace; branches and PRs are unnecessary overhead. Stage the specific files you changed, commit, and push to `main`.
+
 ## Adding New Skills
 
 1. Create `skills/{skill-name}/SKILL.md`

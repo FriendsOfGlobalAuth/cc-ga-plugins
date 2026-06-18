@@ -1,6 +1,6 @@
 {
   "name": "global-auth",
-  "version": "1.11.0",
+  "version": "1.11.1",
   "description": "Global Auth plugins for Codex. Skills: global-auth:frontend for TxGlobalAuth widget integration, global-auth:backend for JWT validation and session data extraction, and global-auth:audit for full-stack TxGlobalAuth integration audits and code reviews.",
   "author": {
     "name": "Dmitry Vorobyev",

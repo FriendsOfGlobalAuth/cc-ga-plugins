@@ -5,7 +5,7 @@
   },
   "metadata": {
     "description": "Global Auth Cursor plugin collection for TxGlobalAuth integration workflows.",
-    "version": "1.11.0"
+    "version": "1.11.1"
   },
   "plugins": [
     {

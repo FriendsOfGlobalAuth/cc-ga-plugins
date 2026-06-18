@@ -306,13 +306,13 @@ Validate the token through the Kratos HTTP introspection endpoint. Use this when
 
 > **Architecture note**: The HTTP `/api/jwt/introspect` endpoint is hosted by Kratos itself and internally calls the gRPC TxAuth agent (Approach 1). It abstracts away service discovery, Consul, and gRPC transport — at the cost of higher latency compared to a local agent.
 
-**Endpoint**: `POST https://ga.{domain}/api/jwt/introspect`
+**Endpoint**: `POST https://<contour-host>/api/jwt/introspect`
 
-Production URLs by CDN region:
+**The host is per-contour.** GA runs isolated contours (`dev`, `tst`, `uat`, `prod`), and each has its own introspect host. Production hosts by CDN region:
 - CIS: `https://ga.finam.ru/api/jwt/introspect`
 - International: `https://ga.lime.co/api/jwt/introspect`
 
-Ask your infrastructure team which base URL to use — it must match the environment where the frontend widget is configured.
+Non-production contours are fronted by their own hosts (e.g. `dev.ga.finam.ru`, `tst.ga.finam.ru`, `uat.ga.finam.ru`), and a given product may sit behind its own environment-specific hosts. Ask your infrastructure team for the exact per-contour host — do not guess by editing a subdomain. **The host must match the contour named in the token's `area` claim and the contour your `SERVICE_TOKEN` was issued for.** A mismatch returns **403, not 401** — see "Troubleshooting: introspect returns 403" below.
 
 **Request**:
 ```http
@@ -324,7 +324,7 @@ Authorization: Bearer {SERVICE_TOKEN}
 { "token": "<JWT string from frontend>" }
 ```
 
-- `SERVICE_TOKEN` — a server-to-server (S2S) token that authenticates your backend. Each S2S method (introspect, get-identity, etc.) is a **separate privilege** — the token only grants access to methods explicitly approved for your product. To request a token or additional method access, submit a ticket to the **GA project** or contact the **Global Auth team**. Store the token as a secret (environment variable, vault) — never commit to source control.
+- `SERVICE_TOKEN` — a server-to-server (S2S) token that authenticates your backend. Each S2S method (introspect, get-identity, etc.) is a **separate privilege** — the token only grants access to methods explicitly approved for your product. S2S tokens are also **contour-specific**: a token minted for one contour (`dev`/`tst`/`uat`/`prod`) is rejected by every other contour with a **403** — this is the single most common cause of introspect 403s (see "Troubleshooting: introspect returns 403" below). To request a token or additional method access, submit a ticket to the **GA project** or contact the **Global Auth team**. Store the token as a secret (environment variable, vault) — never commit to source control.
 
 **Response** (success):
 ```json
@@ -351,7 +351,7 @@ Authorization: Bearer {SERVICE_TOKEN}
 ```
 
 **Validation logic**:
-1. Check HTTP status — non-2xx means introspection service is unreachable
+1. Check HTTP status. A `403` does **not** mean the service is down — it means the S2S credential was rejected: a missing / malformed / expired / revoked `SERVICE_TOKEN`, a token not granted the `introspect` privilege, or a token (or host) for a different contour than the token being validated (see "Troubleshooting: introspect returns 403" below). A `5xx` or a timeout means the introspection service is unreachable.
 2. Check strict success booleans before creating an app session. `active` must be exactly `true`. If the adapter or gateway returns `validated`, it must also be exactly `true`; do not normalize a missing or truthy string value into success.
 3. Check `person` or `session.person` exists — if missing, reject
 4. Enforce product scope with server-owned configuration before creating an app session. Plain HTTP introspect proves the token is valid, but the basic response does not by itself prove the token belongs to your product. Use an approved scoped gateway/adapter contract, returned scope fields that can be strictly compared to server config, or a documented Global Auth product-scope control. Do not accept browser-supplied `appName`, `env`, provider, tenant, or auth level as the scope authority.
@@ -366,6 +366,46 @@ GA_SERVICE_TOKEN=<request from Global Auth team via GA project ticket>
 ```
 
 Both approaches validate the token signature and expiration, decompress the `sess` field, and return the decoded session data including `person`. The difference is network topology: gRPC (Approach 1) for backends inside the perimeter with TxAuth agent access, HTTP (Approach 2) for backends outside the perimeter.
+
+### Troubleshooting: introspect returns 403
+
+**Lead hypothesis for ANY introspect 403 → it is an S2S-credential problem, not a network block.** GA returns **403 (Forbidden)**, not 401, for an **absent, invalid, or wrong-contour** `SERVICE_TOKEN` — and a no-auth request to *any* `/api/*` path also returns 403. So **a 403 by itself does NOT imply a gateway IP-allowlist or mTLS block** — that is a *later* hypothesis, not the first. Check the credential before you go debugging firewalls and egress rules.
+
+Two sibling causes dominate — rule out **both** before blaming the network:
+
+- **(A) The token is wrong on its own terms** — typoed or truncated when copied, leading/trailing whitespace or quotes, pointing at the wrong secret/env var, expired, revoked, or **not granted the `introspect` privilege** (each S2S method is approved separately — a token valid for one method 403s on another).
+- **(B) The token, or the host you call, is for a *different contour*** — the most common single cause, and the easiest to miss because the token otherwise looks valid. Covered in depth below.
+
+GA runs **separate, fully isolated contours** — typically `dev`, `tst`, `uat`, `prod`. Each contour has its own introspect host **and** its own S2S service tokens. A `SERVICE_TOKEN` minted for one contour is rejected by another.
+
+**The decisive tell — the JWT `area` claim.** Decode the GA JWT you are trying to validate (read the claim only — this is for diagnostics, it is never a substitute for validation) and read its top-level `area`. That value names the **contour of truth** (e.g. `"area":"dev"`). The introspect host, the `SERVICE_TOKEN`, and the widget `env` must all match that one contour.
+
+**Diagnostic order:**
+
+1. **Is the credential itself sane?** (case A) — an `Authorization: Bearer …` header is actually present; no copy-paste truncation, stray whitespace, or wrapping quotes; the secret/env var resolves to the token you think it does; it isn't expired or revoked; and it is approved for the **introspect** method specifically (not just some other S2S method).
+2. **Decode the GA JWT → read `area`.** (case B starts here) That is the contour everything else must match.
+3. **Does the introspect host match it?** (`area:dev` ⇒ the `dev` contour's host, not the prod one.)
+4. **Was the `SERVICE_TOKEN` issued for that same contour?** A token for a different contour → 403.
+5. **Does the widget `env` match it too?** A widget pointed at one contour while you validate against another is the same bug one step upstream (the token you receive carries the widget's contour in `area`).
+6. **Only if all the above are correct and it still 403s** → *now* consider gateway IP-allowlist / mTLS / egress-not-permitted. Run from inside the perimeter, or switch to the gRPC TxAuth agent (Approach 1).
+
+> Align all four — JWT `area`, introspect host, `SERVICE_TOKEN` contour, widget `env` — to one contour. This resolves the large majority of introspect 403s.
+
+**Quick repro** — send the same request to each candidate contour's introspect host. The host matching the token's `area` returns `200` (with `{"active": true}`); the others return `403`:
+
+```bash
+curl -sS -o /dev/null -w '%{http_code}\n' \
+  -X POST https://<contour-introspect-host>/api/jwt/introspect \
+  -H "Authorization: Bearer $SERVICE_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"token":"<GA_JWT>"}'
+```
+
+This also separates the two causes: if exactly one host returns `200` and it is the one matching `area`, you had case (B) (contour mismatch). If **every** host — including the `area`-matching one — returns `403`, the contour is not the problem: you are in case (A) (the token is missing, malformed, expired, revoked, or not granted `introspect`).
+
+> **Contour hosts are deployment-specific.** GA's own contours are fronted by hosts such as `dev.ga.finam.ru` / `tst.ga.finam.ru` / `uat.ga.finam.ru` / `ga.finam.ru` (CIS) / `ga.lime.co` (International). A given product may instead sit behind its own environment-specific or internal hosts for each contour. The **alignment principle is what matters, not the specific hostnames**: whatever host fronts a contour, its `SERVICE_TOKEN` and the JWT `area` must all name that same contour. Get the per-contour host from the infrastructure team rather than guessing.
+
+**The gRPC path (Approach 1) has the same failure mode in a different shape.** Each TxAuth agent is bound to one contour via its `-dc` / `-remote-service`. A token whose `area` does not match the agent's contour will be rejected (as a gRPC status error rather than an HTTP 403). The `area` claim is the contour of truth there too — connect to the agent configured for the token's contour.
 
 ## Introspect vs Get-Identity — What Each Returns
 
@@ -418,6 +458,7 @@ keyId, firebase, secrets, provider, scope, tstep, spinReq, exp, spinExp, jti
 **There is no `email`, `first_name`, `last_name`, `sub`, or `user_id` at the top level.** This is not a standard OIDC token. User data lives inside the `sess` field.
 
 Key top-level claims:
+- `area` — names the **contour** the token was issued in (e.g. `"dev"`, `"tst"`, `"uat"`, `"prod"`). This is the single source of truth when debugging contour-mismatch failures: the introspect host, the `SERVICE_TOKEN`, and the widget `env` must all match it. See "Troubleshooting: introspect returns 403" above. (Reading this claim for diagnostics is fine; never trust it as a substitute for validation.)
 - `provider` — provider name string (e.g. `"AD_OFFICE"`, `"KRATOS"`, or a product-specific L2 provider name)
 - `scontext` — session context with provider config, token type, expiration settings
 - `scope` — token scope (may be empty `{}` for L1, may contain content flags for L2)
