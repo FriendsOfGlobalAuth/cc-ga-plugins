@@ -1,6 +1,6 @@
 ---
 name: frontend
-description: "TxGlobalAuth (GlobalAuth, GA) JavaScript widget integration. Use when working with TxGlobalAuth, auth-widget, Kratos authentication, JWT token management, or embedding authentication UI in frontend projects."
+description: "TxGlobalAuth (GlobalAuth, GA) JavaScript widget integration. Use when working with TxGlobalAuth, auth-widget, Kratos authentication, JWT token management, embedding authentication UI in frontend projects, or testing registration on dev/tst/uat (SMS/OTP codes not arriving, test email aliases, SMS number pool)."
 ---
 
 # Global Auth - Frontend Integration Skill
@@ -40,6 +40,24 @@ This skill provides expert knowledge of the TxGlobalAuth authentication widget f
 **Before writing any init code**, you MUST know the `appName`. First check the existing codebase for a TxGlobalAuth.init() call — if found, reuse that `appName`. If there is no existing init in the project and the user hasn't specified one, ask directly: "Which `appName` should I use for TxGlobalAuth init?" Do not guess or use a default value — the `appName` determines the authentication mode (Kratos, AD, or Anonymous) and using the wrong one will produce non-functional code.
 
 **CORS and local development**: The `prod` environment does **not** allow `localhost` origins — opening an HTML file directly or serving from `localhost` will cause CORS errors. Only `dev`, `tst`, and `uat` environments allow localhost. When the user is building a demo or developing locally, advise them to use a non-prod `env` value (e.g. `dev` or `tst`). Also note that non-prod environments have their own CDN script URLs — ask the developer for the correct URL if the environment is not `prod`.
+
+## Test Registrations: Email Aliases and SMS Number Pool
+
+Registration and verification flows (sign-up, phone/email confirmation, one-time codes) need real addresses to deliver codes to. Before the first end-to-end test, make sure the testers have the test resources the Global Auth team provides.
+
+**What is delivered where:**
+
+| Channel | `dev` / `tst` | `uat` | `prod` |
+|---|---|---|---|
+| Email | Delivered to any address | Delivered to any address | Delivered to any address |
+| SMS (CIS segment) | Only to numbers allowed by the message proxy's delivery rules; other numbers get nothing | Delivered | Delivered |
+
+**Recommended setup:** ask the Global Auth team (the Global Auth support chat) to issue test resources for each tester's corporate email:
+
+- **Email alias** on an external domain that forwards to the corporate mailbox. The alias supports plus-addressing (`<user>+<anything>@<alias-domain>`), so every `+suffix` is a new address for a fresh registration and all of them land in the same inbox. Corporate mailboxes do not support plus-addressing, which is why the alias is needed for repeated sign-ups. Aliases work on every contour.
+- **SMS number pool** (a range of about 10,000 phone numbers): SMS sent by GlobalAuth to these numbers are forwarded to the tester's email instead of a phone. This is the reliable way to receive SMS codes on `dev`/`tst`. The pool works **only for SMS sent by GlobalAuth itself**; it does not work for SMS-based 2FA or for SMS sent by other systems.
+
+Do not invent test numbers or guess the pool range. Numbers outside an issued pool (or outside the proxy's delivery rules) silently receive nothing. If a tester reports that "the SMS doesn't arrive on the test environment", check this first; it is not a widget or integration bug. See "Symptom: SMS Codes Don't Arrive on the Test Environment" below.
 
 ## Widget Overview
 
@@ -1130,6 +1148,14 @@ When reviewing or refactoring existing TxGlobalAuth code, the integration is oft
 **What you'll see**: The function exists, has proper implementation, but always returns `null` at runtime. It may have been written in anticipation of L2 support or copied from another project using a different provider.
 
 **Fix**: If the product will always be Kratos L1 — remove the dead code. If email is needed, use `requireEmail()` (checks Kratos identity, prompts only if missing, saves to Kratos) or obtain it via backend S2S `get-identity` flow. Do NOT leave the function "just in case L2 might be added someday" — YAGNI applies.
+
+### Symptom: SMS Codes Don't Arrive on the Test Environment
+
+**What you'll see**: On `env: 'dev'` or `'tst'` the widget moves to the code-entry step, but the SMS never arrives. There are no console errors, and the widget behaves normally.
+
+**Diagnosis**: Not a code bug. On `dev`/`tst` SMS goes through a message proxy that delivers only to allowed numbers. An arbitrary personal phone number usually receives nothing. On `uat` and `prod` SMS is delivered normally.
+
+**Fix**: Request an SMS number pool (SMS forwarded to email) and an email alias with plus-addressing from the Global Auth team. See "Test Registrations: Email Aliases and SMS Number Pool". Do not change widget code or `env` to "fix" delivery.
 
 ### Review Priority Order
 
