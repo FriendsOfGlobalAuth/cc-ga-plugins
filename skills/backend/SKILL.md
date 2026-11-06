@@ -326,22 +326,34 @@ Authorization: Bearer {SERVICE_TOKEN}
 
 - `SERVICE_TOKEN` — a server-to-server (S2S) token that authenticates your backend. Each S2S method (introspect, get-identity, etc.) is a **separate privilege** — the token only grants access to methods explicitly approved for your product. S2S tokens are also **contour-specific**: a token minted for one contour (`dev`/`tst`/`uat`/`prod`) is rejected by every other contour with a **403** — this is the single most common cause of introspect 403s (see "Troubleshooting: introspect returns 403" below). To request a token or additional method access, submit a ticket to the **GA project** or contact the **Global Auth team**. Store the token as a secret (environment variable, vault) — never commit to source control.
 
-**Response** (success):
+**Response** (success, AD token; shape observed on dev, 2026-09-03):
 ```json
 {
     "active": true,
+    "exp": 1757000000,
+    "iat": 1756996400,
+    "iss": "...",
+    "jti": "...",
+    "provider": "AD_OFFICE",
     "person": {
         "id": "55ca4536-...",
-        "kratos_id": "e9b9aba4-...",
         "name": "John",
         "lastname": "Doe",
-        "email": "jdoe@example.com",
-        "login": "jdoe"
+        "email": "jdoe@corp.example.com",
+        "login": "jdoe",
+        "verified_phone": "..."
     }
 }
 ```
 
-> **Naming convention difference**: The introspection endpoint returns `kratos_id` (snake_case). The frontend widget's `session.person` uses `kratosId` (camelCase). These are the same value — just different naming conventions between the HTTP API and the JavaScript widget.
+What the response does and does not carry:
+
+- **`provider` is a flat string at the root**, not inside `person`. It is the only provider signal in the response: the token's session context (`scontext`, with the structured provider and its source) is **not** returned.
+- **`person.kratos_id`** is present for Kratos users and **absent for AD users**, who carry only `person.id` (the AD GUID). In AD mode, `person.kratos_id ?? person.id` always resolves to `person.id`.
+- **`person.verified_phone`** (snake_case) arrives when the token has it. It is PII: keep it out of logs and storage unless the product needs it (see "Storing User Data — Trade-offs").
+- Fields beyond `person.id` are optional, as in the token (see "Data Availability by Provider and Auth Level").
+
+> **Naming convention difference**: The introspection endpoint returns `kratos_id` and `verified_phone` (snake_case). The frontend widget's `session.person` uses `kratosId` and `verifiedPhone` (camelCase). Same values, different naming conventions between the HTTP API and the JavaScript widget.
 
 **Response** (invalid/expired token):
 ```json
@@ -463,11 +475,13 @@ Key top-level claims:
 - `scontext` — session context with provider config, token type, expiration settings
 - `scope` — token scope (may be empty `{}` for L1, may contain content flags for L2)
 - `firebase` — nested Firebase JWT (present for AD and Kratos L1, empty string for L2)
-- `zipped` — always `true`, indicates `sess` is gzip-compressed
+- `zipped` — whether `sess` is gzip-compressed. **Not always `true`**: GA compresses `sess` only above a size threshold, so compact payloads (short ASCII names, no phone) arrive uncompressed with `zipped: false`.
 
-### The `sess` Field Is a Compressed JSON Object
+### The `sess` Field Is an Encoded Blob, Not an Object
 
-The JWT has `"zipped": true` — the `sess` payload is gzip-compressed. When you decode the JWT on the backend (e.g., `jwt.decode()` in Node.js), the `sess` field appears as a binary/base64 blob, **not** as a structured object.
+The `sess` payload is a serialized protobuf session, gzip-compressed when it is large. When you decode the JWT on the backend (e.g., `jwt.decode()` in Node.js), the `sess` field appears as a binary/base64 blob, **not** as a structured object.
+
+If you maintain legacy code that unpacks `sess` locally, detect compression by the gzip magic bytes (`1f 8b`) at the start of the payload rather than relying on the `zipped` claim. Code that always gunzips breaks on small sessions. The real fix for such code is moving to TxAuth Agent or HTTP introspect (see the anti-pattern below), not a better parser.
 
 **Do not attempt to read `sess` fields without decompression.** Use one of the validation approaches above — they handle decompression and return structured data.
 
@@ -507,7 +521,10 @@ AD provider variants:
 - `AD_OFFICE` — standard AD (username + password)
 - `AD_OFFICE_OTP` — AD with OTP as second factor
 - `AD_OFFICE_SMS` — AD with SMS as second factor
-- `AD_WTE` — separate domain controller (no 2FA at this time)
+- `AD_OFFICE_2FA` — AD with a second factor
+- `AD_WTE` — separate domain controller (forest), no 2FA at this time
+
+The name combines the **forest** (`OFFICE`, `WTE`) with an optional authentication-method suffix. If your code needs the forest, take the segment after `AD_` and drop the method suffix. Never compare against the full name: switching the `appName` to a variant such as `AD_OFFICE_SMS` silently breaks a check for `AD_OFFICE`.
 
 ### Kratos L1 Tokens (`KRATOS` and similar L1 providers)
 
@@ -695,6 +712,12 @@ The session structure varies dramatically by provider and auth level. Kratos L1 
 - For AD users, `person.id` is the AD GUID; `kratosId` is absent.
 
 Use `person.kratosId` (camelCase in JWT / `kratos_id` snake_case in introspection response) as the stable cross-level identity for Kratos users. Use `person.id` only for AD users (where `kratosId` doesn't exist).
+
+### Do NOT Match AD Users Across Forests by Login
+
+**Wrong**: Looking up an AD user in a staff directory (or any other system) by `person.login` alone.
+
+`login` is the short sAMAccountName, without the domain. It is unique only within one forest: `OFFICE` and `WTE` can each have a `jdoe`. In a real incident, a `WTE` user received the name, position and staff ID of the `OFFICE` employee with the same login, and the staff ID then decided whom access-granting searches returned. Scope every lookup by forest (from `provider`, see the AD variants above) plus login, or match by `person.id` (the AD GUID).
 
 ### Do NOT Call person.id "the Global ID of the User"
 

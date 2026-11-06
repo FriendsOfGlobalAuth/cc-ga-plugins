@@ -713,7 +713,7 @@ For AD-type providers (`AD_OFFICE`, `AD_OFFICE_OTP`, `AD_OFFICE_SMS`, `AD_WTE`, 
 
 **What is NOT available from any TxGlobalAuth provider**: job title, department, office location, manager, expertise/skills. These require direct LDAP/AD queries on the backend.
 
-**Backend token validation**: The JWT payload contains `session.person` in a compressed (`zipped: true`) form. The backend must validate and decode the token — see the `global-auth:backend` skill for approaches.
+**Backend token validation**: The JWT payload contains `session.person` in an encoded (and, when large, compressed) form. The backend must validate and decode the token — see the `global-auth:backend` skill for approaches.
 
 ## Event Subscriptions
 
