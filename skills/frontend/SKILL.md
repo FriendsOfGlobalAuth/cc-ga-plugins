@@ -1,6 +1,6 @@
 ---
 name: frontend
-description: "TxGlobalAuth (GlobalAuth, GA) JavaScript widget integration. Use when working with TxGlobalAuth, auth-widget, Kratos authentication, JWT token management, embedding authentication UI in frontend projects, or testing registration on dev/tst/uat (SMS/OTP codes not arriving, test email aliases, SMS number pool)."
+description: "TxGlobalAuth (GlobalAuth, GA) JavaScript widget integration. Use when writing or fixing frontend code that calls TxGlobalAuth/auth-widget: login, logout, JWT/token handling, access-denied screen, SSO logging users out, server-rendered multi-page apps, Kratos auth UI, or testing registration on dev/tst/uat (SMS/OTP codes not arriving, test emails, SMS pool)."
 ---
 
 # Global Auth - Frontend Integration Skill
@@ -8,6 +8,8 @@ description: "TxGlobalAuth (GlobalAuth, GA) JavaScript widget integration. Use w
 This skill provides expert knowledge of the TxGlobalAuth authentication widget for frontend integration.
 
 **Important**: All TxGlobalAuth methods are available only after successful `init()`. Always structure code so that all API calls happen inside the `.then()` callback of `init()` or after `await init()`.
+
+**Read before you edit, not after.** If you are about to change or debug code that calls TxGlobalAuth (a login or logout path, an "access denied" screen, a user being logged out unexpectedly, a token that fails verification), read the relevant sections here first. The widget's typings show signatures, not semantics. Two integrations built from the typings alone got the access-denied dialog wrong.
 
 ## Pre-Integration Health Check
 
@@ -104,12 +106,12 @@ Note: `isAuthenticatedUserAccount()` returns `true` for both Kratos L1 and AD-au
 > **Note on masking**: Values inside `session.person` (token payload) are **never masked** — `person.email` is `john.doe@example.com`, not `j***@example.com`. Masking is only applied by the separate `getIdentifiers()` widget method, which returns intentionally masked values for in-app display (see "User Profile" section below). Do not confuse the two surfaces.
 
 **Key takeaways:**
-- **Kratos L1** — the most common mode for consumer products — has **no email, no name, no login** in the token. Only `person.id` and `person.kratosId` are reliable. If you need a verified email, use `requireEmail()` — it checks Kratos identity first and only prompts the user if the email is missing; after it resolves, the identity is updated and `getIdentifiers()` returns the email. Alternatively, obtain the email through the backend via `get-identity`.
+- **Kratos L1** — the most common mode for consumer products — has **no email, no name, no login** in the token. Only `person.id` and `person.kratosId` are reliable. If you need a verified email, call `requireEmail()` **without** `initialData`: it resolves without UI if the identity already has a verified email, and prompts only if it is missing (see "Progressive Verification" for how `initialData` changes this). After it resolves, the identity is updated and `getIdentifiers()` returns the email. Alternatively, obtain the email through the backend via `get-identity`.
 - **Kratos L1 special (deprecated)** — a legacy provider configuration where `person.email` IS present in the L1 token. If you encounter an integration that reads email from L1 tokens and it works — the product may be using this deprecated provider. New integrations should NOT depend on this behavior.
 - **`person.id` semantics differ between L1 and L2 for Kratos users**: at L1 it carries the **same value as `kratosId`**; at L2 it carries a **different identifier** (a client/trading account GUID, internally called the "Global ID"). This is not "the field changing value" — different identifiers happen to be exposed under the same key. See "person.id Semantics" in the `global-auth:backend` skill.
 - **AD users** have no `kratosId` — use `person.id` (AD GUID) as the identifier.
 - **Token fields are scalars, Kratos stores collections**: `person.email` and `person.verifiedPhone` in the token are single values, but a Kratos identity may have **multiple** emails and phones. The token only contains one (if any). To check whether a user has a verified email or phone **at all**, use `getIdentifiers()` (returns masked values) or `getVerificationInfo()` — do not rely on token fields for presence checks.
-- **Reading email/phone from token fields** is not strictly wrong if the value happens to be present, but it is **fragile** — the field may be absent depending on provider and auth level (see table above). If you see code reading `person.email` or `person.verifiedPhone` from the token, **raise the question**: is this field guaranteed to be present for this product's provider type? If not, consider `requireEmail()` / `requirePhone()` (idempotent — resolves instantly if the identity already has the data, otherwise prompts and saves to Kratos) or a backend `get-identity` call.
+- **Reading email/phone from token fields** is not strictly wrong if the value happens to be present, but it is **fragile** — the field may be absent depending on provider and auth level (see table above). If you see code reading `person.email` or `person.verifiedPhone` from the token, **raise the question**: is this field guaranteed to be present for this product's provider type? If not, consider `requireEmail()` / `requirePhone()` without `initialData` (resolves instantly if the identity already has the data, otherwise prompts and saves to Kratos) or a backend `get-identity` call.
 
 ### Key Integration Concepts
 
@@ -118,6 +120,8 @@ Note: `isAuthenticatedUserAccount()` returns `true` for both Kratos L1 and AD-au
 > **Anti-pattern**: Do not split auth state management between `subscribeJWT` (for login) and `subscribeGlobal('logout')` (for logout). This leads to stale UI when logout happens externally (other tab, console, session expiry). `subscribeJWT` already covers logout — the callback fires with `null`.
 
 **2. Existing app migration — logout is the #1 integration mistake**: When integrating TxGlobalAuth into an existing application, find **every place** where the app currently clears auth state on logout (clearing cookies, localStorage, resetting stores, redirecting) and replace them with `TxGlobalAuth.logout()`. The old direct-cleanup approach breaks cross-tab logout, external session management, and the reactive `subscribeJWT` architecture. If you leave the old logout handlers alongside TxGlobalAuth, the app will have two competing logout mechanisms and the UI will get out of sync.
+
+**3. Progressive requirement chains**: For actions that require a specific auth level, build a chain of `authenticate()` → `require*()` calls in the action handler. Called without `initialData`, each method resolves instantly when its requirement is already met. For example, a "Post comment" button handler should call `authenticate()` → `requireAgreements()` → `requireEmail()` → then submit the comment with the JWT token. This way, guests get the full onboarding flow, while authenticated users skip straight to submission. Passing `initialData` changes what the methods do (see "Progressive Verification").
 
 ## Recommended Integration Architecture
 
@@ -157,7 +161,7 @@ The methods described below are individual building blocks. This section shows h
 
 ### Why This Architecture
 
-- **subscribeJWT at root level** survives page navigation. If placed on the login page, the subscription dies when the user navigates away.
+- **subscribeJWT at root level** survives page navigation. If placed on the login page, the subscription dies when the user navigates away. (A server-rendered multi-page app has no persistent root; see "Multi-Page Apps with a Server Session" below.)
 - **Logout via `TxGlobalAuth.logout()` only** ensures that cross-tab logout, console logout, and server-side session revocation all work — they all flow through `subscribeJWT(null)`.
 - **Login page has no state logic** because `subscribeJWT` already fires when `authenticate()`/`authorize()` completes — duplicating the state update creates race conditions.
 
@@ -172,7 +176,25 @@ When integrating into an **existing** application that already has authenticatio
 
 If you skip step 1-2, the app will have two logout mechanisms that conflict with each other.
 
-**3. Progressive requirement chains**: For actions that require a specific auth level, build a chain of `authenticate()` → `require*()` calls in the action handler. Every method in the chain is idempotent — if the requirement is already met, it resolves instantly. For example, a "Post comment" button handler should call `authenticate()` → `requireAgreements()` → `requireEmail()` → then submit the comment with the JWT token. This way, guests get the full onboarding flow, while authenticated users skip straight to submission.
+### Multi-Page Apps with a Server Session
+
+The architecture above is drawn for a single-page app, where one root lives for the whole visit. A server-rendered multi-page app (server templates, a separate `/login` page, the product session kept in a server-side cookie) has no such root: every navigation loads a new page and runs `init()` again. The rules still hold, but the "root" moves:
+
+- **The shared layout is the root.** Load the widget, call `init()` and subscribe with `subscribeJWT` in the layout (base template) that **every** page includes, the login page too. Do not limit the subscription to "authenticated" pages: a logout in another tab, a GA session expiry or an account switch reaches the product only through the `subscribeJWT` of whatever page is open.
+- **The server tells the page whose session it holds.** In-memory trackers (`lastPersonId` in the sketches under "subscribeJWT Handler — Required Cases") reset on every page load, and `subscribeJWT` fires immediately with the current token on each load. Comparing against memory would exchange the token on every navigation. Render the identity of the current server session into the page instead, for example `<body data-session-person="…">` with the identifier stored at exchange time, or empty when there is no session. Compare the token against that.
+- **The `subscribeJWT` callback is the only place that changes the server session:**
+  - token, and the page has no server session → send the token to the server to create the session (the exchange), then reload;
+  - token for a different identity than the page's server session → account switch: the server replaces the session, then reload;
+  - token for the same identity → token refresh: nothing to do on the server;
+  - `null`, and the page has a server session → call the server endpoint that drops the cookie, then reload or redirect;
+  - `null` and no server session → nothing.
+- **The login page calls only `authenticate()` / `authorize()`.** No `.then(resp => exchange(resp.token))`: the exchange runs in the layout's callback. Two exchange paths race each other.
+- **The logout control calls only `TxGlobalAuth.logout()`.** It is not a live `href="/logout"` link, and it does not also call the server. The server's "drop the session" endpoint is called from the `null` branch above, and only there. Logout is one action: `logout()` → the token becomes `null` → the product session ends.
+- **Login and logout controls stay inactive until `init()` has resolved.** A link that works before init bypasses the widget entirely.
+
+### Before You Finish
+
+Check every code path that creates or ends the product session, on the client and on the server. Each one must start from the `subscribeJWT` callback. A login handler that exchanges the token itself, a logout button that also calls the server, or a server logout endpoint reachable from a plain link is the mistake this architecture exists to prevent. When the integration is done, run the `global-auth:audit` skill over it.
 
 ## Script Loading
 
@@ -317,13 +339,10 @@ For products requiring custom Kratos provider configuration or multi-provider se
 // Rejects if user closes the dialog
 TxGlobalAuth.authenticate();
 
-// Pre-fill user data: email
+// Start with known identifiers: email, phone, or both
+// Not a pre-fill: a valid identifier skips the input step and the code is sent at once
 TxGlobalAuth.authenticate({ initialData: { email: 'user@example.com' } });
-
-// Pre-fill user data: phone
 TxGlobalAuth.authenticate({ initialData: { phone: '+13125550690' } });
-
-// Pre-fill user data: phone and email
 TxGlobalAuth.authenticate({ initialData: { phone: '+13125550690', email: 'user@example.com' } });
 
 
@@ -339,6 +358,8 @@ TxGlobalAuth.authenticate({
 ```
 
 **Safe to call when already authenticated** — if the user is already logged in, `authenticate()` resolves immediately without showing any UI.
+
+**`initialData` in `authenticate()` works, despite the typings.** The wrapper's typings mark it `@deprecated` with "has no effect". On dev (widget 8.22.0), `authenticate({ initialData: { phone, email } })` opened the login window directly on the code step and sent the code to that phone and email. Pass only identifiers the user has just entered or confirmed. An identifier from your CRM starts a login for that identifier, it does not just fill in a field.
 
 ### Active Directory Mode
 ```javascript
@@ -386,7 +407,7 @@ TxGlobalAuth.isAuthenticatedUserClient();     // L2 (after 2FA and only for clie
 
 ## Progressive Verification (require* methods)
 
-Chain these to ensure the user meets requirements before proceeding. Each method is **idempotent** — if the requirement is already satisfied, it resolves immediately without showing UI.
+Chain these to ensure the user meets requirements before proceeding. Called **without `initialData`**, each method resolves immediately without UI when its requirement is already satisfied. With `initialData`, `requirePhone()` / `requireEmail()` behave differently (see the table below).
 
 ```javascript
 await TxGlobalAuth.authenticate();
@@ -400,14 +421,20 @@ await TxGlobalAuth.requireEmail({ initialData: { email: '...' } });
 // Both resolve with { hasVerifiedEmail, hasVerifiedPhone }
 // Reject with error.payload?.verificationInfo on failure
 //
-// How these work:
-// 1. Check Kratos identity traits — does the user already have a verified email/phone?
-// 2. If YES → resolve immediately, no UI shown
-// 3. If NO → show input form → validate → save to Kratos identity → resolve
-//
 // After resolve, the Kratos identity is updated — getIdentifiers() will now return
 // the verified email/phone (masked). This is an identity mutation, not just a prompt.
 ```
+
+**What `requirePhone()` / `requireEmail()` show depends on `initialData` and on what the identity already holds** (observed on prod, `appName` `finamRu`, Kratos L1, an account with verified identifiers):
+
+| `initialData` | What the widget does |
+|---|---|
+| not passed | resolves at once, no UI, if a verified identifier of that type exists; otherwise shows the input form |
+| an identifier the identity **already has** | resolves at once, no UI |
+| a valid identifier the identity **does not have** | goes straight to the **code screen**: the identifier is submitted and the code is sent, the input step is skipped |
+| a syntactically **invalid** value | shows the input form with a validation error; the user can correct it |
+
+So `initialData` is not a pre-fill. A valid new identifier in `initialData` **starts adding that identifier** to the identity, with a code sent to it. An integration that passes an email from its own CRM triggers verification of a new identifier, not a hint for the user. Not verified: an identifier that is present but not verified (`hasVerified* = false`).
 
 ### Profile Data with Validation
 ```javascript
@@ -459,20 +486,49 @@ The close button (X) behavior:
 
 ### Permission Denied Flow
 
-In a multi-product ecosystem, being authenticated does not mean the user is authorized for a specific product. Use `requireUnauthorizedChoice` to show a unified "access denied" screen with product-specific messaging. The dialog explains why access is denied, optionally offers a way to resolve the issue, and allows switching accounts (which silently logs out the current session — the dialog itself serves as confirmation of intent).
+In a multi-product ecosystem, being authenticated does not mean the user is authorized for a specific product. Use `requireUnauthorizedChoice` to show a unified "access denied" screen with product-specific messaging. The dialog always has a default **"Change account"** button, which silently logs the current session out (the dialog itself is the confirmation). Passing `buttonTitle` adds a second, custom button.
+
+**Two kinds of failure land on this dialog, and they need opposite actions.** Classify the failure before you show it:
+
+| Kind | Examples | What the user needs | Dialog content |
+|---|---|---|---|
+| **Product refusal** — the check ran and said no | account banned, no product account, role not granted | change account (or the product's own fix, e.g. "Create account") | `description` = the reason from your backend |
+| **Technical failure** — the check could not run | no response, timeout, network error, backend down, 5xx, a body that is not JSON | **retry**, keep the account | `description` = your app's own localized text about the connection; `buttonTitle: 'Retry'` |
+
+Treat as technical: no `response` at all; network error codes (`ERR_NETWORK`, `ECONNABORTED`, `ETIMEDOUT`, `ERR_CANCELED` in axios); any **5xx**; and a body that does not parse as JSON (HTML from a proxy or from the frontend's catch-all route). With a BFF or proxy in front of the backend, "backend down" usually reaches the browser as the proxy's own **500**, not as a refused connection.
+
+**`buttonTitle` is required for technical failures.** `require*()` dialogs hide the close button by default. Without `buttonTitle` the only way out is the default button, that is a silent logout. A one-second network drop would then cost the user their session.
 
 ```javascript
+// Technical failure: offer a retry, keep the session
 const result = await TxGlobalAuth.requireUnauthorizedChoice({
-    title: 'Access denied',
-    description: 'Your account does not have access to this service',
-    buttonTitle: 'Create account'    // optional — shows custom action button
+    title: 'Could not check access',
+    description: 'Connection problem. Please try again.',   // app text, never the HTTP client's message
+    buttonTitle: 'Retry',
 });
+if (result.button === 'custom') {
+    await retryAccessCheck();   // repeat the original check with the same token
+}
+// result.button === 'default' → the widget has already logged the user out (see below)
 
-// result.ok — true if user interacted, false if dismissed
-// result.button — 'default' (switch account) or 'custom' (clicked buttonTitle)
+// Product refusal: show the backend's reason
+const refusal = await TxGlobalAuth.requireUnauthorizedChoice({
+    title: 'Access denied',
+    description: reasonFromBackend,   // e.g. 'Your account does not have access to this service'
+});
+// No buttonTitle, so refusal.button is always 'default': the user chose to change account,
+// the widget has logged out, and cleanup runs in subscribeJWT(null). Nothing to do here.
 ```
 
-The dialog shows a default "switch account" button (which silently logs out) and optionally a custom action button. Rejects if the user is not authenticated.
+Rules that integrations get wrong:
+
+- **Read the result; never `void` the call.** `{ ok, button }` is part of the contract. Without it, `'custom'` has no handler and the dialog becomes a one-way screen.
+- **On `button === 'default'`, do not clear the session yourself.** The widget has already logged out; the state arrives through `subscribeJWT(null)`, and the normal cleanup runs there. Your own reset here races that path.
+- **`description` is never empty.** Without it the widget shows a generic text that tells the user nothing. For technical failures, show your app's localized text and send the HTTP client's message to the log only: axios always sets `error.message` (`Request failed with status code 500`), so a fallback chain "response body → `error.message` → localized text" never reaches the localized text. Show the backend's message only for product refusals, where it is meaningful. NestJS-style backends return `message` as an **array of strings** on 400, so join it.
+- **Handle rejection.** The official wrapper resolves only with `ok: true`. If the dialog could not be shown or was not completed, the promise rejects (`Failed to require show UnauthorizedChoice`). The widget's own docs say it rejects for an unauthenticated user, but an integrator saw the dialog shown to an unauthenticated user (dev, AD provider). Do not use the call as an authentication check.
+- **Available in AD mode too.** The dialog renders for AD providers; there is no need for a separate AD fallback screen.
+
+**Testing note:** clicking a dialog button through an accessibility-tree reference (tools that click by a11y ref) may not reach the widget's button: the promise stays pending, which looks like a widget bug. A native `element.click()` on the button found in the DOM resolves the promise correctly.
 
 ### Advanced: Platform-Specific L2 Authorization
 
@@ -986,7 +1042,8 @@ interface Window {
         requirePhone(options?: { initialData?: { phone?: string }; mountInline?: HighLevelInlineMountOptions; disableSkip?: boolean }): Promise<RequireUserIdentifiersResult>;
         requireEmail(options?: { initialData?: { email?: string }; mountInline?: HighLevelInlineMountOptions; disableSkip?: boolean }): Promise<RequireUserIdentifiersResult>;
         requireUserProfileData(options?: { requirements?: Record<string, boolean>; initialData?: Partial<UserProfileData>; validator?: (key: string, value: string) => void; mountInline?: HighLevelInlineMountOptions; disableSkip?: boolean }): Promise<UserProfileData>;
-        requireUnauthorizedChoice(options: { title: string; description: string; buttonTitle?: string }): Promise<RequireUnauthorizedChoiceResult>;
+        // All options are optional in the widget's typings; always pass title and description anyway (see "Permission Denied Flow")
+        requireUnauthorizedChoice(options?: { title?: string; description?: string; buttonTitle?: string; mountInline?: HighLevelInlineMountOptions; disableSkip?: boolean }): Promise<RequireUnauthorizedChoiceResult>;
 
         // Error subscriptions
         subscribeOnLoginError(callback: (error: ServiceError) => void): () => void;
@@ -1173,7 +1230,7 @@ When reviewing or refactoring existing TxGlobalAuth code, the integration is oft
 
 **What you'll see**: The function exists, has proper implementation, but always returns `null` at runtime. It may have been written in anticipation of L2 support or copied from another project using a different provider.
 
-**Fix**: If the product will always be Kratos L1 — remove the dead code. If email is needed, use `requireEmail()` (checks Kratos identity, prompts only if missing, saves to Kratos) or obtain it via backend S2S `get-identity` flow. Do NOT leave the function "just in case L2 might be added someday" — YAGNI applies.
+**Fix**: If the product will always be Kratos L1 — remove the dead code. If email is needed, use `requireEmail()` without `initialData` (checks Kratos identity, prompts only if missing, saves to Kratos) or obtain it via backend S2S `get-identity` flow. Do NOT leave the function "just in case L2 might be added someday" — YAGNI applies.
 
 ### Symptom: SMS Codes Don't Arrive on the Test Environment
 
@@ -1192,6 +1249,7 @@ When reviewing an existing TxGlobalAuth integration, work in this order:
 3. **State management** — verify `subscribeJWT` is the single source of truth. Look for competing state paths.
 4. **Identity handling** — check which `person` fields are used and whether they're available for this provider type.
 5. **Direct Kratos calls** — search for `fetch` calls to `ga.*` domains from the frontend.
-6. **Logout flow** — verify logout goes through `TxGlobalAuth.logout()`, not direct cookie/store clearing.
+6. **Logout flow** — verify logout goes through `TxGlobalAuth.logout()`, not direct cookie/store clearing. In a server-rendered multi-page app, also check that the server's logout endpoint is called only from the `subscribeJWT(null)` branch (see "Multi-Page Apps with a Server Session").
+7. **Access-denied dialog** — for every `requireUnauthorizedChoice` call: the result is read (not `void`); technical failures are told apart from product refusals before the dialog is shown; technical failures pass `buttonTitle` (retry), or the code states why changing account is the only way out; `button === 'default'` does not trigger the app's own session cleanup; `description` is never empty.
 
 **Only after verifying 1-2 should you proceed to logic-level code review.** Fixing logic bugs in code that uses the wrong API is wasted effort.
