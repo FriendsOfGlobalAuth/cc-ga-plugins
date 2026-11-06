@@ -17,6 +17,7 @@ This skill provides expert knowledge of the TxGlobalAuth authentication widget f
 
 1. **Check the CDN URL** in the HTML/script loader. The path must end with `/auth-widget/@8.js` — the hostname varies by CDN region (there are multiple CIS and international CDN hosts), but the path is always the same.
    - Correct pattern: `https://{cdn-host}/auth-widget/@8.js`
+   - A single `<script src>` with no fallback across hosts works but is fragile; see "CDN Sources" below for the GA loader snippet.
    - If you see `global-auth.v8.js` in the URL (any host) — **STOP**. This is the internal UI module, not the official wrapper. See "Widget Architecture" below.
 
 2. **Check the API surface** in the deployed environment (browser console):
@@ -205,30 +206,53 @@ If you encounter these method names in existing code, the project is loading the
 
 ### CDN Sources (v8 - current)
 
-The official wrapper is always at the path `/auth-widget/@8.js`. The hostname varies by CDN region — there are multiple CDN hosts for CIS (5 hosts) and international (3 hosts) deployments. Two common examples:
+The official wrapper is always at the path `/auth-widget/@8.js`. In production it is served from several hosts per region. The GA team lists them in this fallback order (since October 2026 the primary host is `ga-cdn`, no longer `libs-cdn`):
 
-```html
-<!-- CIS CDN (one of several hosts) -->
-<script src="https://libs-cdn.finam.ru/auth-widget/@8.js"></script>
+| Region | Production hosts, in fallback order |
+|---|---|
+| CIS / RU | `ga-cdn.finam.ru`, `ga-cdn2.finam.ru`, `libs-cdn.finam.ru`, `ga.finam.ru`, `ga-tt.finam.ru` |
+| International | `ga-cdn.lime.co`, `libs-cdn.lime.co`, `ga.lime.co` |
 
-<!-- International CDN (one of several hosts) -->
-<script src="https://libs-cdn.lime.co/auth-widget/@8.js"></script>
+Any single host can be unreachable for some users (regional blocking, a CDN outage). A page that loads the widget with one `<script src>` loses login entirely when that host fails. Load it through a fallback loader, in this order of preference:
+
+**1. The GA team's loader snippet — recommended.** The Global Auth team publishes a ready-made inline loader for copy/paste: on the internal GA wiki (the page on connecting the widget from the CDN), in the GA showcase, and on the GA developer portal. Ask the GA team if you have access to none of them. Copy it as is rather than rewriting it: it is the reference implementation, and it also records when a fallback host had to be used, so the GA team can track failovers.
+
+**2. A hand-written fallback — when asked to write one.** If the user asks you to write a loader yourself, or the snippet is not available, a hand-written fallback is still much better than a single `<script src>`. Follow the same contract as the GA snippet, so the snippet can replace it later without touching the rest of the code:
+
+1. Take the host list for the product's region (table above); the path is `/auth-widget/@8.js` on every host.
+2. If `sessionStorage` holds a hostname that worked before (the GA snippet uses the key `tx-global-auth:static-url-hostname`), move that host to the front of the list.
+3. Add one `<script async>` for the first host. If it has neither loaded nor failed within about 5 seconds, add the next host's script **without** removing the slow one. Keep going until the list is exhausted.
+4. The first script to fire `onload` wins: remove the other pending script tags, store the winning hostname in `sessionStorage`, and run the `txga_onload` callbacks.
+5. When every host has failed, or about 60 seconds have passed in total, run the `txga_onerror` callbacks with the error.
+6. Leave a comment that this loader does not report failovers to GA, and that it should be replaced with the GA snippet.
+
+**3. A single fixed URL — only if no loader is possible** (for example, a platform that accepts nothing but a script URL). Use the region's first host, `https://ga-cdn.finam.ru/auth-widget/@8.js` or `https://ga-cdn.lime.co/auth-widget/@8.js`, not `libs-cdn`, and note in the code that this has no fallback.
+
+#### Load callbacks: `txga_onload` / `txga_onerror`
+
+The loader reports the result through two global callback queues. Wait on them instead of the script tag's `onload` or `DOMContentLoaded`:
+
+```javascript
+window.txga_onload = window.txga_onload || [];
+window.txga_onload.push(function () {
+    // TxGlobalAuth is available — call TxGlobalAuth.init() here
+});
+
+window.txga_onerror = window.txga_onerror || [];
+window.txga_onerror.push(function (error) {
+    // every CDN host failed — show a "login unavailable" state and log the error
+});
 ```
+
+Both are arrays and can be set up before or after the loader runs. A callback pushed after loading has finished runs immediately. Some copies of the example contain the typo `widnos.txga_onerror`; the global object is `window`.
 
 ### How to Choose and Document the CDN Host
 
-The path is universal; the hostname is regional. Use the host that matches the product's audience, operator chain, and data-residency expectations, and document the choice next to the configuration or in the runbook.
+The path is universal; the host list is regional. Use the list that matches the product's audience, operator chain, and data-residency expectations, and document the choice next to the configuration or in the runbook.
 
-Common host families:
+When reviewing or building a starter, do not silently hardcode a CDN host. Add a short comment or README note that explains why the chosen region (or, for a fixed URL, the chosen host) is appropriate for the `appName` and environment. If the product's region is unknown, ask the TxGlobalAuth team rather than copying another product's setup. A Content Security Policy must allow every host of the region's list, not only the first one, or the fallback is blocked by the browser.
 
-| Product audience / operator chain | Example host |
-|---|---|
-| CIS-aligned deployments | `https://libs-cdn.finam.ru/auth-widget/@8.js` |
-| International-aligned deployments | `https://libs-cdn.lime.co/auth-widget/@8.js` |
-
-When reviewing or building a starter, do not silently hardcode a CDN host. Add a short comment or README note that explains why the chosen host is appropriate for the `appName` and environment. If the product's canonical CDN host is unknown, ask the TxGlobalAuth team rather than copying a host from another product.
-
-**How to verify**: The URL path must end with `/auth-widget/@8.js`. The hostname doesn't matter for correctness — all CDN hosts serve the same build. What matters is that the path points to the **wrapper** (`auth-widget/@8.js`), not the **internal module** (`global-auth.v8.js`).
+**How to verify**: every URL path must end with `/auth-widget/@8.js`. The hosts in a list serve the same build, so which one wins does not change behavior. What matters is that the path points to the **wrapper** (`auth-widget/@8.js`), not the **internal module** (`global-auth.v8.js`). In existing code, a single `<script src>` on `libs-cdn` is outdated: recommend the GA snippet.
 
 > **Warning about other URLs**: URLs containing `global-auth.v8.js` in the path (on any host, e.g. `ga.lime.co/globalauth/ga/global-auth.v8.js`) point to the **internal UI module**, not the official wrapper. The widget UI may appear to work, but the JavaScript API is completely different, private, and **may change in any release** without backward compatibility.
 
@@ -249,13 +273,15 @@ if (window.TxGlobalAuth && typeof window.TxGlobalAuth.init === 'function') { /* 
 
 ### Deferred Loading
 
-Use any CDN source URL from above:
+With a fallback loader (recommended, see "CDN Sources" above), start initialization from `txga_onload` and handle failure in `txga_onerror`.
+
+With a single fixed URL (the last resort), use the script tag's own handlers:
 
 ```html
-<script defer onload="onLoadTxGlobalAuth()" onerror="onErrorTxGlobalAuth()" src="..."></script>
+<script defer onload="onLoadTxGlobalAuth()" onerror="onErrorTxGlobalAuth()" src="https://ga-cdn.finam.ru/auth-widget/@8.js"></script>
 ```
 
-Always provide an `onerror` handler for script loading failures.
+Either way, always handle the loading failure. Without that, a blocked CDN shows up as a login button that does nothing.
 
 ## Initialization
 
