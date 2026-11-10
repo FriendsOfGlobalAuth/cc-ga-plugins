@@ -137,6 +137,7 @@ Verify the backend refuses to authenticate when the validator path is missing, d
 
 - Missing TxAuth Agent or introspection configuration must refuse exchange. It must not fall back to local JWT parsing or unsigned token acceptance.
 - Dev bypasses, mock validators, and fake tokens must be impossible to enable in production-like environments.
+- If the app has a mock auth mode (see `global-auth:backend` → `Environments Where GA Cannot Run — Mock Mode`), check: one validated switch; production refuses mock with no override flag; a loud startup banner; roles resolved server-side through the same path in both modes; the client learns the mode from the server-rendered page, and a failed startup request never defaults it to `ga`. A client-asserted identity (role or email headers from the browser, a hardcoded principal in the SPA) is a Critical finding in either mode.
 - Validator errors, malformed responses, missing session data, and negative validation must not create app sessions.
 - Startup/readiness should make production-incomplete auth configuration visible. At minimum, report if production can start with placeholder `appName`, missing validator, unsafe HTTP introspection, dev bypasses, validation caching that can bypass freshness, wrong widget path, insecure cookies, or undocumented origin/environment settings.
 

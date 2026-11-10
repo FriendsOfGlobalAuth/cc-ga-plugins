@@ -44,6 +44,13 @@ This skill provides expert knowledge of the TxGlobalAuth authentication widget f
 
 **CORS and local development**: The `prod` environment does **not** allow `localhost` origins — opening an HTML file directly or serving from `localhost` will cause CORS errors. Only `dev`, `tst`, and `uat` environments allow localhost. When the user is building a demo or developing locally, advise them to use a non-prod `env` value (e.g. `dev` or `tst`). Also note that non-prod environments have their own CDN script URLs — ask the developer for the correct URL if the environment is not `prod`.
 
+**Environments where GA cannot run** (sandboxed preview frames, cloud sandboxes and CI outside the corporate network, hermetic tests): the app needs a mock mode, specified in `global-auth:backend` → "Environments Where GA Cannot Run — Mock Mode". On the client side:
+
+- The server knows the effective mode when it renders the HTML, so it writes it into the page, e.g. `<script>window.__APP_AUTH_MODE__ = 'mock'</script>` in `<head>`, in both the dev-server and the production paths. The app reads it synchronously, before any network call.
+- Never discover the mode with a startup request that falls back to `ga` when it fails. Without network access the request fails, the app silently enters the one mode that cannot work, and nothing on screen says why. When a mode decides whether the network is needed, it is not discovered over the network.
+- If the value is missing, show an explicit startup error instead of defaulting to either mode.
+- In mock mode, do not load the widget at all. With the API on the page's own origin, use `credentials: 'same-origin'`; `'include'` is blocked in sandboxed frames.
+
 ## Test Registrations: Email Aliases and SMS Number Pool
 
 Registration and verification flows (sign-up, phone/email confirmation, one-time codes) need real addresses to deliver codes to. Before the first end-to-end test, make sure the testers have the test resources the Global Auth team provides.

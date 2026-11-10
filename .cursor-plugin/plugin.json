@@ -1,7 +1,7 @@
 {
   "name": "global-auth",
   "displayName": "Global Auth",
-  "version": "1.12.0",
+  "version": "1.12.1",
   "description": "Global Auth plugins for Cursor. Skills: global-auth:frontend for TxGlobalAuth widget integration, global-auth:backend for JWT validation and session data extraction, global-auth:audit for full-stack TxGlobalAuth integration audits and code reviews, and global-auth:marketing for CRM leads, marketing context and guest-identified chat.",
   "author": {
     "name": "Dmitry Vorobyev"

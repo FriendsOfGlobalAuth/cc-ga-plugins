@@ -1,6 +1,6 @@
 ---
 name: backend
-description: "TxGlobalAuth (GlobalAuth, GA) backend integration. Use when validating TxGlobalAuth JWT tokens via TxAuth Agent (gRPC) or HTTP introspect, decoding session/person data, deploying TxAuth agent, setting up gRPC token validation, building auth verify endpoints, consuming requireCaptcha action confirmations (confirmation/consume), checking S2S token permissions, or working with Kratos token introspection in Go, PHP, Node.js, NestJS, Express, Java, Python, or any backend."
+description: "TxGlobalAuth (GlobalAuth, GA) backend integration. Use when validating TxGlobalAuth JWT tokens via TxAuth Agent (gRPC) or HTTP introspect, decoding session/person data, deploying TxAuth agent, setting up gRPC token validation, building auth verify endpoints, consuming requireCaptcha action confirmations (confirmation/consume), checking S2S token permissions, adding a mock auth mode for sandboxes and CI without GA, or working with Kratos token introspection in Go, PHP, Node.js, NestJS, Express, Java, Python, or any backend."
 ---
 
 # Global Auth - Backend Integration Skill
@@ -927,6 +927,31 @@ function handleLogin(request):
 - **User matching**: Use `person.kratosId` (Kratos) or `person.id` (AD) as the external identity key. See "person.id Semantics" above.
 - **Store the identity key, not the contact data** — see "Storing User Data — Trade-offs" below for why duplicating email/name/login into your own DB is usually a bad idea.
 - **Do not skip the exchange**: Passing the raw GA token to every API call and validating it every time is inefficient and couples your entire backend to the TxAuth introspection service.
+
+## Environments Where GA Cannot Run — Mock Mode
+
+An integration written as "even locally, always authenticate against real GA" assumes a GA contour is reachable from wherever the app runs. That holds on a corporate laptop on the VPN. It fails in situations that are normal, not exotic:
+
+- **Sandboxed preview frames** (AI app builders, online IDE previews): a frame sandboxed without `allow-same-origin` has an opaque origin. Reading `document.cookie` throws, and credentialed requests are blocked, so no cookie-based session can exist there, whatever the server does.
+- **Public-cloud sandboxes and CI runners outside the corporate network**: GA contours are not reachable (the dev host does not even resolve), and the S2S token must not leave the perimeter anyway.
+- **Hermetic end-to-end suites** that must not depend on an external identity provider.
+- **A contour that is down** while someone works.
+
+Two different mechanisms are at play: in the first case the browser forbids the session, in the others the network cannot reach GA. In both, an auth error is not an auth bug: that environment can never do GA auth, and debugging the integration there wastes the day.
+
+So a GA integration ships a **mock mode** from day one, as a supported mode rather than an `if (dev)` branch:
+
+- **One switch**, for example `AUTH_MODE=mock|ga`, validated at startup; any other value fails fast.
+- **Production refuses `mock`.** The server will not start in mock mode under a production configuration, and there is no override flag in production builds. A build that needs mock mode for review gets its own non-production environment. Whenever mock mode is active, log a loud `AUTH BYPASSED` banner at startup.
+- **One authorization path for both modes.** The server derives identity and roles from its own session. In `ga` the session is created after real validation (agent or introspect); in `mock` the server creates it for a stub principal and then runs the same role resolution. The client never asserts who it is: no role or email headers from the browser, no hardcoded principal in the SPA. Without a mock mode, that client-asserted identity is exactly what teams build instead, and it ships.
+- **Zero network egress in mock mode**: no widget load, no call to GA.
+- **The client learns the mode from the page the server renders**, never from a request (see `global-auth:frontend` → "Integration Rules").
+- **Build-time client variables are public** (`VITE_*`, `NEXT_PUBLIC_*`). Anything secret, such as the S2S token, stays in server-side configuration.
+
+**Open: mocking beyond login.** Mocking `authenticate()` / `authorize()` is one call returning one token. Apps that also use other GA data (profile, identifiers, whatever the widget loads at init) end up half real, half stubbed. Two directions exist, and they solve different problems, so choosing one does not settle the other:
+
+- **(a) A redirectable widget**: everything the widget needs at init can point to a local URL that serves canned responses. This covers every method, including future ones, and it is the only option that works in sandboxed frames. It needs a GA-side contract for "everything the widget needs", which the GA team would have to maintain.
+- **(b) A public dev GA sandbox**: a reduced GA reachable from the internet, with no real user data. Apps exercise the real client code. It does not help sandboxed frames (a browser restriction) or hermetic CI, and it is one more service to run and secure.
 
 ## Storing User Data — Trade-offs
 
