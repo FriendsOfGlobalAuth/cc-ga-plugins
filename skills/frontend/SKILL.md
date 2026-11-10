@@ -1,6 +1,6 @@
 ---
 name: frontend
-description: "TxGlobalAuth (GlobalAuth, GA) JavaScript widget integration. Use when writing or fixing frontend code that calls TxGlobalAuth/auth-widget: login, logout, JWT/token handling, access-denied screen, SSO logging users out, server-rendered multi-page apps, Kratos auth UI, or testing registration on dev/tst/uat (SMS/OTP codes not arriving, test emails, SMS pool)."
+description: "TxGlobalAuth (GlobalAuth, GA) JavaScript widget integration. Use when writing or fixing frontend code that calls TxGlobalAuth/auth-widget: login, logout, JWT/token handling, access-denied screen, SSO logging users out, server-rendered multi-page apps, captcha action confirmation (requireCaptcha), Kratos auth UI, or testing registration on dev/tst/uat (SMS/OTP codes not arriving, test emails, SMS pool)."
 ---
 
 # Global Auth - Frontend Integration Skill
@@ -237,14 +237,14 @@ The official wrapper is always at the path `/auth-widget/@8.js`. In production i
 
 Any single host can be unreachable for some users (regional blocking, a CDN outage). A page that loads the widget with one `<script src>` loses login entirely when that host fails. Load it through a fallback loader, in this order of preference:
 
-**1. The GA team's loader snippet — recommended.** The Global Auth team publishes a ready-made inline loader for copy/paste: on the internal GA wiki (the page on connecting the widget from the CDN), in the GA showcase, and on the GA developer portal. Ask the GA team if you have access to none of them. Copy it as is rather than rewriting it: it is the reference implementation, and it also records when a fallback host had to be used, so the GA team can track failovers.
+**1. The GA team's loader snippet — recommended.** The Global Auth team publishes a ready-made inline loader for copy/paste: on the internal GA wiki (the page on connecting the widget from the CDN), in the help popup of the GA showcase, and on the GA developer portal. Do not copy the script the showcase pages load themselves: it is an older variant that takes a different input. Ask the GA team if you have access to none of them. Copy it as is rather than rewriting it: it is the reference implementation, and it also records when a fallback host had to be used, so the GA team can track failovers.
 
 **2. A hand-written fallback — when asked to write one.** If the user asks you to write a loader yourself, or the snippet is not available, a hand-written fallback is still much better than a single `<script src>`. Follow the same contract as the GA snippet, so the snippet can replace it later without touching the rest of the code:
 
 1. Take the host list for the product's region (table above); the path is `/auth-widget/@8.js` on every host.
 2. If `sessionStorage` holds a hostname that worked before (the GA snippet uses the key `tx-global-auth:static-url-hostname`), move that host to the front of the list.
 3. Add one `<script async>` for the first host. If it has neither loaded nor failed within about 5 seconds, add the next host's script **without** removing the slow one. Keep going until the list is exhausted.
-4. The first script to fire `onload` wins: remove the other pending script tags, store the winning hostname in `sessionStorage`, and run the `txga_onload` callbacks.
+4. A host wins only if the widget actually arrived. `onload` also fires when a host answers 200 with something that is not the widget (a stub page, a truncated or foreign file). So in `onload`, check `window.TxGlobalAuth && typeof window.TxGlobalAuth.init === 'function'`. If the check fails, treat the host as failed, move on to the next one, and do not store it in `sessionStorage`. The first host that passes wins: remove the other pending script tags, store its hostname in `sessionStorage`, and run the `txga_onload` callbacks.
 5. When every host has failed, or about 60 seconds have passed in total, run the `txga_onerror` callbacks with the error.
 6. Leave a comment that this loader does not report failovers to GA, and that it should be replaced with the GA snippet.
 
@@ -266,7 +266,7 @@ window.txga_onerror.push(function (error) {
 });
 ```
 
-Both are arrays and can be set up before or after the loader runs. A callback pushed after loading has finished runs immediately. Some copies of the example contain the typo `widnos.txga_onerror`; the global object is `window`.
+Both are arrays and can be set up before or after the loader runs. A callback pushed after loading has finished runs immediately. Do not rely on `txga_onerror` alone: keep your own timeout for waiting for the widget, so a load that never reports back still ends in the "login unavailable" state. Some copies of the example contain the typo `widnos.txga_onerror`; the global object is `window`.
 
 ### How to Choose and Document the CDN Host
 
@@ -407,7 +407,7 @@ TxGlobalAuth.isAuthenticatedUserClient();     // L2 (after 2FA and only for clie
 
 ## Progressive Verification (require* methods)
 
-Chain these to ensure the user meets requirements before proceeding. Called **without `initialData`**, each method resolves immediately without UI when its requirement is already satisfied. With `initialData`, `requirePhone()` / `requireEmail()` behave differently (see the table below).
+Chain these to ensure the user meets requirements before proceeding. Called **without `initialData`**, each method resolves immediately without UI when its requirement is already satisfied. With `initialData`, `requirePhone()` / `requireEmail()` behave differently (see the table below). `requireCaptcha()` is not part of this family: it confirms one action and shows the challenge on every call (see "Action Confirmation").
 
 ```javascript
 await TxGlobalAuth.authenticate();
@@ -533,6 +533,35 @@ Rules that integrations get wrong:
 ### Advanced: Platform-Specific L2 Authorization
 
 Methods like `requireMmaAuthorization()` and `requireLimeAuthorization()` enable L1→L2 transitions within specific products. This is an advanced feature available only for select `appName` configurations. Consult official documentation or contact the support team.
+
+## Action Confirmation (requireCaptcha)
+
+Use `requireCaptcha` when the user must confirm one critical action with a challenge: a transfer, deleting an account, changing payout details. Requires widget **≥ 8.19.0**. No login is needed; it works for guests too.
+
+The result is a one-time **confirmation token** bound to that action. While it sits in the browser it proves nothing, because everything in the browser is under the user's control. The product's backend must exchange it with GA (`POST /api/confirmation/consume`) right before executing the action; see `global-auth:backend` → "Action Confirmation — consume Is Required". Without that call the captcha is decoration.
+
+```javascript
+// actionPayload: the operation's parameters. GA stores them and returns them to your backend.
+const { token } = await TxGlobalAuth.requireCaptcha('transfer', {
+    actionPayload: { transferId: 'tr_123' },
+});
+
+// Send only the token. The backend gets the parameters back from consume, not from this request.
+await fetch('/api/transfers/execute', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ confirmationToken: token }),
+});
+```
+
+What to know:
+
+- **`action` is required**: a string naming the operation. The backend passes the same string to `consume`; a mismatch is refused.
+- **`actionPayload`** is a plain object of up to 1 KB. A primitive or an array is wrapped as `{ data: payload }`. GA keeps it on the server and returns it in the `consume` response, so the parameters do not travel back through the browser.
+- **Rejects** with `Failed to require captcha` when the user closes the challenge.
+- **Not idempotent**, unlike the other `require*` methods: every call creates a new confirmation and shows the challenge again. Call it at the moment of the action, not in advance.
+- **The project the backend must name is `protoAppName`.** The widget sends it as the `X-Kratos-Project` header. It defaults to the `appName` from `init()`. The backend passes the same value as `project` to `consume`.
+- **The challenge provider is GA's choice, per contour and project** (reCAPTCHA or Yandex SmartCaptcha). The same `appName` can show a different captcha on dev and on prod; that is not a misconfiguration. On dev and tst the challenge was observed to accept any answer (2026-09-04), so a green test there says nothing about the challenge. The guarantees come from the token: it is one-time, bound to project + action + method, and its parameters are held on the server. Those properties are the same on every contour.
 
 ## JWT Token Management
 
@@ -1251,5 +1280,6 @@ When reviewing an existing TxGlobalAuth integration, work in this order:
 5. **Direct Kratos calls** — search for `fetch` calls to `ga.*` domains from the frontend.
 6. **Logout flow** — verify logout goes through `TxGlobalAuth.logout()`, not direct cookie/store clearing. In a server-rendered multi-page app, also check that the server's logout endpoint is called only from the `subscribeJWT(null)` branch (see "Multi-Page Apps with a Server Session").
 7. **Access-denied dialog** — for every `requireUnauthorizedChoice` call: the result is read (not `void`); technical failures are told apart from product refusals before the dialog is shown; technical failures pass `buttonTitle` (retry), or the code states why changing account is the only way out; `button === 'default'` does not trigger the app's own session cleanup; `description` is never empty.
+8. **Action confirmation** — every `requireCaptcha` call has a backend `consume` right before the protected operation, and the backend takes the operation's parameters from `action_payload`, not from the request (see "Action Confirmation").
 
 **Only after verifying 1-2 should you proceed to logic-level code review.** Fixing logic bugs in code that uses the wrong API is wasted effort.

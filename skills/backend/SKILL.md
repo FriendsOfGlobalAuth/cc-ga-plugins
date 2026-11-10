@@ -1,6 +1,6 @@
 ---
 name: backend
-description: "TxGlobalAuth (GlobalAuth, GA) backend integration. Use when validating TxGlobalAuth JWT tokens via TxAuth Agent (gRPC) or HTTP introspect, decoding session/person data, deploying TxAuth agent, setting up gRPC token validation, building auth verify endpoints, or working with Kratos token introspection in Go, PHP, Node.js, NestJS, Express, Java, Python, or any backend."
+description: "TxGlobalAuth (GlobalAuth, GA) backend integration. Use when validating TxGlobalAuth JWT tokens via TxAuth Agent (gRPC) or HTTP introspect, decoding session/person data, deploying TxAuth agent, setting up gRPC token validation, building auth verify endpoints, consuming requireCaptcha action confirmations (confirmation/consume), checking S2S token permissions, or working with Kratos token introspection in Go, PHP, Node.js, NestJS, Express, Java, Python, or any backend."
 ---
 
 # Global Auth - Backend Integration Skill
@@ -308,11 +308,16 @@ Validate the token through the Kratos HTTP introspection endpoint. Use this when
 
 **Endpoint**: `POST https://<contour-host>/api/jwt/introspect`
 
-**The host is per-contour.** GA runs isolated contours (`dev`, `tst`, `uat`, `prod`), and each has its own introspect host. Production hosts by CDN region:
-- CIS: `https://ga.finam.ru/api/jwt/introspect`
-- International: `https://ga.lime.co/api/jwt/introspect`
+**The host is per-contour.** GA runs isolated contours (`dev`, `tst`, `uat`, `prod`), and each has its own host. The widget picks the host from the widget `env` and the project's region in GA. A server-to-server call must go to the same contour (from the GA widget source, November 2026):
 
-Non-production contours are fronted by their own hosts (e.g. `dev.ga.finam.ru`, `tst.ga.finam.ru`, `uat.ga.finam.ru`), and a given product may sit behind its own environment-specific hosts. Ask your infrastructure team for the exact per-contour host — do not guess by editing a subdomain. **The host must match the contour named in the token's `area` claim and the contour your `SERVICE_TOKEN` was issued for.** A mismatch returns **403, not 401** — see "Troubleshooting: introspect returns 403" below.
+| Contour | `ru` | `tt` | `lime`, `cy` | `us` |
+|---|---|---|---|---|
+| `dev` | `https://dev.ga.finam.ru` | same | same | same |
+| `tst` | `https://tst.ga.finam.ru` | same | same | same |
+| `uat` | `https://ga-uat.finam.ru` | `https://ga-uat.finam.ru` | `https://ga-uat.lime.co` | `https://ga-uat.limex.me` |
+| `prod` | `https://ga.finam.ru` | `https://ga-tt.finam.ru` | `https://ga.lime.co` | `https://ga.lime.co` |
+
+A given product may still sit behind its own environment-specific hosts. If the project's region is unknown, ask the GA team rather than guessing by editing a subdomain. **The host must match the contour named in the token's `area` claim and the contour your `SERVICE_TOKEN` was issued for.** A mismatch returns **403, not 401** — see "Troubleshooting: introspect returns 403" below.
 
 **Request**:
 ```http
@@ -415,9 +420,73 @@ curl -sS -o /dev/null -w '%{http_code}\n' \
 
 This also separates the two causes: if exactly one host returns `200` and it is the one matching `area`, you had case (B) (contour mismatch). If **every** host — including the `area`-matching one — returns `403`, the contour is not the problem: you are in case (A) (the token is missing, malformed, expired, revoked, or not granted `introspect`).
 
-> **Contour hosts are deployment-specific.** GA's own contours are fronted by hosts such as `dev.ga.finam.ru` / `tst.ga.finam.ru` / `uat.ga.finam.ru` / `ga.finam.ru` (CIS) / `ga.lime.co` (International). A given product may instead sit behind its own environment-specific or internal hosts for each contour. The **alignment principle is what matters, not the specific hostnames**: whatever host fronts a contour, its `SERVICE_TOKEN` and the JWT `area` must all name that same contour. Get the per-contour host from the infrastructure team rather than guessing.
+> **Contour hosts are deployment-specific.** GA's own contours are fronted by the hosts in the table under "Approach 2". A given product may instead sit behind its own environment-specific or internal hosts for each contour. The **alignment principle is what matters, not the specific hostnames**: whatever host fronts a contour, its `SERVICE_TOKEN` and the JWT `area` must all name that same contour.
+
+### Checking Your S2S Token
+
+The `/api/*` middleware answers **every** rejected S2S credential with `403` and an **empty body**. At least four different situations look the same from outside:
+
+1. the `Authorization` header did not arrive (a proxy dropped it, a typo in the header name);
+2. the token is not known to this contour (for example, it was issued for another one);
+3. the token is known but lacks the permission this route requires;
+4. the token was issued to you, but the contour does not know it yet: GA's configuration was updated and the service not yet redeployed.
+
+Each `/api/*` route requires its own permission: `/api/jwt/introspect` needs `jwt`, `/api/confirmation/consume` needs `confirmation`, `/api/marketing/crm-response` needs `crm-response`. A token can be valid and still get `403` on a route whose permission it lacks. Tell the cases apart with one `curl` each, before debugging integration code:
+
+- **Probe a route that needs a different permission** with the same token. Any answer other than `403` proves the token is valid on this contour and reached GA; what remains is the permission set (a GA configuration change, requested from the GA team) or the rollout.
+- **Probe with a resource that does not exist.** `consume` with a made-up confirmation token returns `404` once authentication and permission pass, and spends nothing; `403` means you were not let in.
+- **Try the token against each contour.** If one cell of "token × contour" answers, you mixed up the layout. If none does, the token is not rolled out yet or lacks the permission.
+- **A `403` that turns into `404` after GA redeploys, with the same token**, means the value was right all along: it was waiting for the rollout.
+
+"Issued" and "working" are two different events with a deployment in between. A permission that came with a new feature may exist on no current token, not even on tokens that have worked for years.
 
 **The gRPC path (Approach 1) has the same failure mode in a different shape.** Each TxAuth agent is bound to one contour via its `-dc` / `-remote-service`. A token whose `area` does not match the agent's contour will be rejected (as a gRPC status error rather than an HTTP 403). The `area` claim is the contour of truth there too — connect to the agent configured for the token's contour.
+
+## Action Confirmation — `consume` Is Required
+
+When the frontend protects an action with `TxGlobalAuth.requireCaptcha()` (see `global-auth:frontend` → "Action Confirmation"), the browser receives a one-time confirmation token. Everything in the browser is under the user's control, so the token proves nothing until **your backend** exchanges it with GA, immediately before executing the action. This is the second case, after token validation, where an integration without the server-side call is pointless. Building only the frontend half is the default way this feature gets implemented wrong.
+
+```http
+POST https://<contour-host>/api/confirmation/consume HTTP/1.1
+Authorization: Bearer {SERVICE_TOKEN}
+Content-Type: application/json
+
+{ "token": "<confirmation token from the browser>", "project": "<protoAppName>", "action": "transfer", "method": "captcha" }
+```
+
+- `SERVICE_TOKEN` needs the **`confirmation`** permission. It is new with this feature: existing S2S tokens, even ones used for years, may not have it. Request it from the GA team (ticket to project GA). See "Checking Your S2S Token" above.
+- `project` is the widget's `protoAppName`, which defaults to the `appName` from `init()` (the widget sends it as `X-Kratos-Project`). It is not your service's name.
+- `action` is the string the frontend passed to `requireCaptcha`; `method` is `"captcha"`.
+- The host is the same contour the widget used (table under "Approach 2"). A confirmation created on one contour and consumed on another returns `404` for a perfectly valid token.
+
+| Status | When | What the backend does |
+|---|---|---|
+| `200` | the token is valid and project, action and method match; the confirmation is atomically marked consumed | execute the action, with parameters from `action_payload` |
+| `403`, **empty body** | the `/api/*` middleware rejected the S2S token: missing, unknown to this contour, or without the `confirmation` permission | configuration error, not the user's (see "Checking Your S2S Token") |
+| `403`, JSON with a `reason` | `project`, `action` or `method` does not match | refuse; the confirmation is **not** spent |
+| `404` | no confirmation for this token | refuse |
+| `409` | already consumed | refuse (replay) |
+| `410` | expired (lifetime set by Kratos `confirmation.lifespan`, 1 hour by default) | ask the user to confirm again |
+| `400` | the body fails the schema, or the confirmation is not in the confirmed state | refuse |
+
+Success body:
+
+```json
+{ "id": "...", "status": "consumed", "project": "...", "action": "transfer", "method": "captcha",
+  "action_payload": { "transferId": "tr_123" },
+  "identity_id": "...", "session_id": "...", "expires_at": "...", "created_at": "..." }
+```
+
+`identity_id` and `session_id` are set only when the user was logged in when confirming.
+
+Rules:
+
+- **Consume at the point of no return**, right before executing the action. It is a one-shot state transition, not a check: a "validating" call made earlier spends the confirmation, and the real call then gets `409`.
+- **Take the operation's parameters from `action_payload`, never from the client request.** The client may send only the token. Otherwise the user confirms a transfer of 100 and the backend executes one of 100 000.
+- **Mismatches are checked before consumption**: a request with the wrong action or project is refused and does not burn the confirmation. Useful for UX and for tests.
+- **The token for `consume` is a server secret.** With the `confirmation` permission it can consume every confirmation of the project. Never send it to the frontend, and never put it behind a pass-through proxy endpoint.
+- **`action_payload` is an object of at most 1 KB.** The widget wraps primitives and arrays; a direct server-side create with anything else gets `400`.
+- **Test the token's guarantees, not the captcha.** On dev and tst the challenge was observed to accept any answer; the provider and its strength are contour configuration. One-time use, binding to project + action + method and server-held parameters are the same everywhere.
 
 ## Introspect vs Get-Identity — What Each Returns
 
