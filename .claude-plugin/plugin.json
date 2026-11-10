@@ -1,7 +1,7 @@
 {
   "name": "global-auth",
-  "version": "1.11.6",
-  "description": "Global Auth plugins for Claude Code. Skills: global-auth:frontend (TxGlobalAuth widget integration), global-auth:backend (JWT validation and session data extraction), global-auth:audit (full-stack TxGlobalAuth integration audits and code reviews).",
+  "version": "1.12.0",
+  "description": "Global Auth plugins for Claude Code. Skills: global-auth:frontend (TxGlobalAuth widget integration), global-auth:backend (JWT validation and session data extraction), global-auth:audit (full-stack TxGlobalAuth integration audits and code reviews), global-auth:marketing (CRM leads, marketing context, guest-identified chat).",
   "author": {
     "name": "Dmitry Vorobyev",
     "url": "https://github.com/VoDmAl"

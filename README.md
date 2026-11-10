@@ -10,6 +10,7 @@ This repository also serves as the Claude marketplace (`ga-claude-code-marketpla
 |-------|---------|-------------|
 | frontend | `/global-auth:frontend` | TxGlobalAuth widget integration - initialization, auth flows, token management, UI embedding, access-denied dialog, multi-page apps with a server session, action confirmation (requireCaptcha) |
 | backend | `/global-auth:backend` | TxGlobalAuth backend integration - JWT validation, session data extraction, TxAuth Agent, HTTP introspect, auth verify endpoints, action confirmation consume, contour hosts, S2S token checks |
+| marketing | `/global-auth:marketing` | TxGlobalAuth marketing integration - CRM leads (marketing.sendResponse), marketing context (UTM/INT/referral), contacts form, guest-identified chat |
 | audit | `/global-auth:audit` | TxGlobalAuth full-stack integration audit and code review - auth-widget/API usage, JWT validation, token exchange, sessions, identity keys, PII, CORS, deployment posture |
 
 ## Installation
@@ -97,7 +98,9 @@ cc-ga-plugins/
     │   └── SKILL.md
     ├── backend/
     │   └── SKILL.md
-    └── frontend/
+    ├── frontend/
+    │   └── SKILL.md
+    └── marketing/
         └── SKILL.md
 ```
 

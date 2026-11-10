@@ -5,7 +5,7 @@ description: "TxGlobalAuth (GlobalAuth, GA) JavaScript widget integration. Use w
 
 # Global Auth - Frontend Integration Skill
 
-This skill provides expert knowledge of the TxGlobalAuth authentication widget for frontend integration.
+This skill provides expert knowledge of the TxGlobalAuth authentication widget for frontend integration. CRM leads, the marketing context, the contacts form and a chat that identifies the guest are in `global-auth:marketing`.
 
 **Important**: All TxGlobalAuth methods are available only after successful `init()`. Always structure code so that all API calls happen inside the `.then()` callback of `init()` or after `await init()`.
 
