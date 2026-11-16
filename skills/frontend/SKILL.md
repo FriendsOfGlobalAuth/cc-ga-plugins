@@ -366,7 +366,7 @@ TxGlobalAuth.authenticate({
 
 **Safe to call when already authenticated** — if the user is already logged in, `authenticate()` resolves immediately without showing any UI.
 
-**`initialData` in `authenticate()` works, despite the typings.** The wrapper's typings mark it `@deprecated` with "has no effect". On dev (widget 8.22.0), `authenticate({ initialData: { phone, email } })` opened the login window directly on the code step and sent the code to that phone and email. Pass only identifiers the user has just entered or confirmed. An identifier from your CRM starts a login for that identifier, it does not just fill in a field.
+**`initialData` in `authenticate()` works, despite the typings.** The wrapper's typings mark it `@deprecated` with "has no effect", and the wrapper reports the parameter as deprecated in the console (the level rises with the deprecation's age, up to `error`), yet the value still takes effect. On dev (widget 8.22.0), `authenticate({ initialData: { phone, email } })` opened the login window directly on the code step and sent the code to that phone and email. Pass only identifiers the user has just entered or confirmed. An identifier from your CRM starts a login for that identifier, it does not just fill in a field.
 
 ### Active Directory Mode
 ```javascript
@@ -885,14 +885,20 @@ await TxGlobalAuth.showAgreements();       // Show agreements (informational —
 
 ```javascript
 await TxGlobalAuth.createClient({
-    type: 'etna',    // or 'edox'
-    source: 0,       // platform source
-    initialData: {
+    type: 'etna',    // US cabinet; 'edox' — RU cabinet; omit to let the server decide
+    source: 0,       // txuserflow source of the demo registration (etna only)
+    initialData: {   // optional; edox takes only phone and email
         firstName: '...', lastName: '...',
         phone: '...', email: '...'
     }
 });
 ```
+
+- **Needs a logged-in user.** For a guest the widget logs "Authentication required. You must be logged in to create a client" and the promise rejects. Run `authenticate()` and the `require*` steps your product needs first.
+- **What the user sees:** a spinner while the server creates the client. Forms appear only when the server answers that data is missing (`not_enough_data`): the widget then asks for the email or phone, first and last name, or a password itself, and creates the client after that. `firstName` / `lastName` are optional; pass them when the user has already given them (for example, in your own form) and the widget uses them instead of asking.
+- **`type: 'etna'` with `phone`** starts confirmation of that phone first; `email` is skipped when the account already has a verified one.
+- **Calling it again is safe.** When the account already has the client (a demo account issued earlier), the call shows only the spinner and resolves (seen on prod, widget 8.x, 2026-11). So the same chain `authenticate()` → `require*` → `createClient()` works for a user who is already logged in: every step resolves without a form.
+- **Rejects** (`Failed to create client`) when creation fails or the resulting token is not the target client provider's.
 
 ## App Navigation with OTT (One-Time Token)
 

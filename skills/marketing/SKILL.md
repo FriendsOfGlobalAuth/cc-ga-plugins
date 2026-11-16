@@ -1,6 +1,6 @@
 ---
 name: marketing
-description: "TxGlobalAuth (GlobalAuth, GA) marketing integration: CRM leads, UTM/marketing context, guest-identified chat. Use when sending a lead or response to CRM with TxGlobalAuth.marketing.sendResponse (sourceId, new_website, WebformData), reading UTM/INT/referral marks with getContextBuilder, collecting phone/name/email with showContactsForm, or embedding a support chat that identifies the guest."
+description: "TxGlobalAuth (GlobalAuth, GA) marketing integration: CRM leads, UTM/marketing context, guest-identified chat. Use when sending a lead or response to CRM with TxGlobalAuth.marketing.sendResponse (sourceId, new_website, WebformData), reading UTM/INT/referral marks with getContextBuilder, collecting phone/name/email with showContactsForm, embedding a support chat that identifies the guest, or posting the lead to a third-party CRM form such as HubSpot (Forms API, objectTypeId) beside the GA login and createClient flow."
 ---
 
 # Global Auth - Marketing Integration Skill
@@ -194,6 +194,21 @@ Rules for this flow:
 
 On dev, the contour's CORS was seen to allow only `http://localhost:8080` and `http://localhost:3000` among localhost origins. For test phone numbers and email aliases, see `global-auth:frontend` → "Test Registrations".
 
+## A Lead to a Third-Party CRM Form Beside the GA Flow
+
+Some sites also post the lead to a CRM form outside GA, for example a HubSpot form. `marketing.sendResponse` does not cover it. What the GA flow adds:
+
+- **Order:** after the steps that collect and confirm the contact (`authenticate()` → `require*`), before `createClient()` (see `global-auth:frontend` → "Client Creation").
+- **A failed submission does not stop the GA flow.** Catch it and go on.
+- **Not for a user who was already logged in.** The frontend has no usable email for them: a Kratos L1 token carries none, and `getIdentifiers()` returns masked values (`j***@example.com`).
+- **Production contour only**, so dev and uat runs do not create CRM records.
+
+For HubSpot Forms API v3, build the request from the form's contract, not from samples:
+
+1. Read `GET https://forms.hsforms.com/embed/v3/form/{portalId}/{formId}/json` → `form.formFieldGroups[].fields[]` whole: `name`, `required`, `objectTypeId`. A form may create a ticket as well as a contact.
+2. Send `objectTypeId` on every field (`0-1` contact, `0-5` ticket). Without it a field is looked up on the contact, and a ticket field fails with `400 REQUIRED_FIELD 'TICKET.<name>'`. The `hutk` context value comes from the `hubspotutk` cookie.
+3. Before deploying, post a deliberately incomplete body to `https://api.hsforms.com/submissions/v3/integration/submit/{portalId}/{formId}`: the `400` lists the missing required fields with their object prefix.
+
 ## Review Checklist
 
 When reviewing code that sends leads or embeds a chat, check each point:
@@ -213,3 +228,5 @@ When reviewing code that sends leads or embeds a chat, check each point:
 13. `catch (e) { if (e.reason === …) }` around `showContactsForm`: there is no such field.
 14. The chat's client name read from a Kratos L1 token, where it is absent.
 15. Calls to `debug.unstable.sendMarketingLead()` / `sendLead()`, removed in 8.15.0.
+16. A third-party CRM submission that stops the GA flow when it fails, or that sends a masked email for a user who was already logged in.
+17. HubSpot form fields sent without `objectTypeId`.
