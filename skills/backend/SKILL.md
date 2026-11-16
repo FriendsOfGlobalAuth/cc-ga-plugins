@@ -98,8 +98,6 @@ Submit a ticket to the technical department on the corporate portal. The ticket 
 
 Ops outcome: Consul agent installed on the host, ACL token issued, server access granted to you.
 
-> **Reference example**: An actual ticket following this pattern is recorded in `docs/tasks/txauth-agent-ops-gap.md` (REQ-522528). Use it as a template.
-
 **Step 2 — You install and configure TxAuth Agent (your responsibility)**
 
 You need admin/root on the target host (granted in Step 1).
@@ -341,7 +339,7 @@ Authorization: Bearer {SERVICE_TOKEN}
     "jti": "...",
     "provider": "AD_OFFICE",
     "person": {
-        "id": "55ca4536-...",
+        "id": "a1b2c3d4-...",
         "name": "John",
         "lastname": "Doe",
         "email": "jdoe@corp.example.com",
@@ -569,7 +567,7 @@ The decompressed `sess` object varies significantly between provider types and a
 ```json
 {
     "person": {
-        "id": "55ca4536-...",
+        "id": "a1b2c3d4-...",
         "name": "John",
         "lastname": "Doe",
         "middlename": "...",
@@ -580,11 +578,27 @@ The decompressed `sess` object varies significantly between provider types and a
 }
 ```
 
-- `person.id` — LDAP/AD GUID (likely objectGUID). **Not a Kratos ID.**
+- `person.id` — the user's AD `objectGUID` in standard GUID string form. Confirmed on a live `AD_OFFICE` token by looking the value up in AD; `AD_WTE` is a separate forest and was not checked. **Not a Kratos ID.**
 - `person.kratosId` — absent
 - `person` fields — typically rich (name, lastname, email, login). Exact set may vary across AD configurations.
 - `userType` — `"EMPLOYEE_USER_TYPE"`
 - No `permissions`, `firms`, `segments`, or trading-related data
+
+**Looking the user up in AD by `person.id`.** In an LDAP filter, `objectGUID` is matched as escaped bytes in Microsoft byte order: the first three groups of the GUID are byte-reversed, the last two stay as written. A filter built from the GUID's hex in written order (RFC 4122 order) returns no entries and no error.
+
+```python
+import uuid
+
+def objectguid_filter(person_id: str) -> str:
+    # bytes_le = Microsoft order: first three groups reversed
+    escaped = "".join(f"\\{b:02x}" for b in uuid.UUID(person_id).bytes_le)
+    return f"(objectGUID={escaped})"
+
+objectguid_filter("a1b2c3d4-e5f6-0718-292a-3b4c5d6e7f80")
+# (objectGUID=\d4\c3\b2\a1\f6\e5\18\07\29\2a\3b\4c\5d\6e\7f\80)
+```
+
+In .NET, `Guid.ToByteArray()` returns the same Microsoft order. Look the user up by `objectGUID`, never by `mail` (see "Why Storing PII Is Usually Wrong").
 
 AD provider variants:
 - `AD_OFFICE` — standard AD (username + password)
@@ -602,8 +616,8 @@ The name combines the **forest** (`OFFICE`, `WTE`) with an optional authenticati
 ```json
 {
     "person": {
-        "id": "e9b9aba4-...",
-        "kratosId": "e9b9aba4-..."
+        "id": "4f3a9c2e-...",
+        "kratosId": "4f3a9c2e-..."
     },
     "permissions": [ ... ],
     "segments": ["employees"],
@@ -632,7 +646,7 @@ Multiple L1 provider names exist depending on product configuration and region. 
         "email": "user@example.com",
         "login": "jdoe",
         "verifiedPhone": "+1(312) 555-0690",
-        "kratosId": "e9b9aba4-..."
+        "kratosId": "4f3a9c2e-..."
     },
     "userType": "COMMON_USER_TYPE",
     "authenticationId": "123249",
@@ -971,7 +985,7 @@ So a GA integration ships a **mock mode** from day one, as a supported mode rath
 
 2. **Matching by stored PII is dangerous — never do this.** Using stored `email`, `login`, or `phone` as a matching key against incoming auth events is an anti-pattern across all providers:
     - **AD `login` (sAMAccountName)** can change (renames, mergers, marriage). Same human, different login.
-    - **AD `email`** is a free-text field in AD — not validated, can be set to anything an admin (or an attacker with directory write access) chooses. Using it as an identity anchor is an authorization vulnerability.
+    - **AD `email`** is a free-text field in AD — not validated, can be set to anything an admin (or an attacker with directory write access) chooses. Using it as an identity anchor is an authorization vulnerability. It is not unique either: in one live check, a single employee's address sat on 3 user objects in one OU and on 5 across the domain.
     - **Kratos `email`/`phone`** can be added, removed, or replaced via the widget — they are not stable.
     - The only safe match keys are `kratosId` (Kratos) or `person.id` AD GUID (AD). Both are opaque and not user-modifiable.
 

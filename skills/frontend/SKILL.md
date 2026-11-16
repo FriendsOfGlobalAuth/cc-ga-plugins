@@ -383,7 +383,7 @@ Only available for `appName` configurations that use AD. Will not work in Kratos
 **After `authorize()`**, the full API works the same as after `authenticate()`: `subscribeJWT` fires with the token, `isAuthenticatedUserAccount()` returns `true`, `getTokenProvider()` returns the token and session data. The only differences are:
 - `getTokenProvider().getKratosId()` returns an empty string (AD users don't have a Kratos ID)
 - `getIdentifiers()` does not return data for AD sessions (currently Kratos-only)
-- `session.person.login` contains the AD sAMAccountName (e.g. `"dvorobiev"`)
+- `session.person.login` contains the AD sAMAccountName (e.g. `"jdoe"`)
 - `session.person.kratosId` is absent
 
 See **AD Provider Session Data** below for the full `session.person` structure.
@@ -726,7 +726,7 @@ For AD-type providers (`AD_OFFICE`, `AD_OFFICE_OTP`, `AD_OFFICE_SMS`, `AD_WTE`, 
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `id` | `string` | User GUID (likely LDAP/AD objectGUID — not a Kratos ID) |
+| `id` | `string` | The user's AD `objectGUID` as a GUID string (not a Kratos ID) |
 | `name` | `string` | First name |
 | `lastname` | `string` | Last name |
 | `middlename` | `string` | Patronymic (may be absent in some AD configurations) |
