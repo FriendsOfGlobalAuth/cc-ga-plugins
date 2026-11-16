@@ -329,7 +329,7 @@ Authorization: Bearer {SERVICE_TOKEN}
 
 - `SERVICE_TOKEN` — a server-to-server (S2S) token that authenticates your backend. Each S2S method (introspect, get-identity, etc.) is a **separate privilege** — the token only grants access to methods explicitly approved for your product. S2S tokens are also **contour-specific**: a token minted for one contour (`dev`/`tst`/`uat`/`prod`) is rejected by every other contour with a **403** — this is the single most common cause of introspect 403s (see "Troubleshooting: introspect returns 403" below). To request a token or additional method access, submit a ticket to the **GA project** or contact the **Global Auth team**. Store the token as a secret (environment variable, vault) — never commit to source control.
 
-**Response** (success, AD token; shape observed on dev, 2026-09-03):
+**Response** (success, AD token; shape observed on dev, 2026-09-03, with `provider_source_ext` and `person.middlename` added as seen on dev 2026-11-16):
 ```json
 {
     "active": true,
@@ -338,10 +338,12 @@ Authorization: Bearer {SERVICE_TOKEN}
     "iss": "...",
     "jti": "...",
     "provider": "AD_OFFICE",
+    "provider_source_ext": "OFFICE",
     "person": {
         "id": "a1b2c3d4-...",
         "name": "John",
         "lastname": "Doe",
+        "middlename": "...",
         "email": "jdoe@corp.example.com",
         "login": "jdoe",
         "verified_phone": "..."
@@ -351,7 +353,8 @@ Authorization: Bearer {SERVICE_TOKEN}
 
 What the response does and does not carry:
 
-- **`provider` is a flat string at the root**, not inside `person`. It is the only provider signal in the response: the token's session context (`scontext`, with the structured provider and its source) is **not** returned.
+- **`provider` is a flat string at the root**, not inside `person`. The token's session context (`scontext`, with the structured provider) is **not** returned.
+- **`provider_source_ext`** is the AD forest of the session's provider (`OFFICE`, `WTE`), independent of the provider name: `AD_OFFICE_SMS` and `AD_PORTAL` both give `OFFICE`. Added to Kratos on 2026-10-30 and seen on dev on 2026-11-16, together with `person.middlename`; on other contours it may not be there yet. Read it when present, otherwise derive the forest from `provider` (see "AD provider variants").
 - **`person.kratos_id`** is present for Kratos users and **absent for AD users**, who carry only `person.id` (the AD GUID). In AD mode, `person.kratos_id ?? person.id` always resolves to `person.id`.
 - **`person.verified_phone`** (snake_case) arrives when the token has it. It is PII: keep it out of logs and storage unless the product needs it (see "Storing User Data — Trade-offs").
 - Fields beyond `person.id` are optional, as in the token (see "Data Availability by Provider and Auth Level").
@@ -605,9 +608,10 @@ AD provider variants:
 - `AD_OFFICE_OTP` — AD with OTP as second factor
 - `AD_OFFICE_SMS` — AD with SMS as second factor
 - `AD_OFFICE_2FA` — AD with a second factor
+- `AD_PORTAL` — forest `OFFICE`, although the name does not say so
 - `AD_WTE` — separate domain controller (forest), no 2FA at this time
 
-The name combines the **forest** (`OFFICE`, `WTE`) with an optional authentication-method suffix. If your code needs the forest, take the segment after `AD_` and drop the method suffix. Never compare against the full name: switching the `appName` to a variant such as `AD_OFFICE_SMS` silently breaks a check for `AD_OFFICE`.
+The name usually combines the **forest** (`OFFICE`, `WTE`) with an optional authentication-method suffix, but not always: `AD_PORTAL` also belongs to `OFFICE`. If your code needs the forest, read `provider_source_ext` from the HTTP introspect response when it is there (see "Response" above). Otherwise take the segment after `AD_`, drop the method suffix, and map `PORTAL` to `OFFICE`. Never compare against the full name: switching the `appName` to a variant such as `AD_OFFICE_SMS` silently breaks a check for `AD_OFFICE`.
 
 ### Kratos L1 Tokens (`KRATOS` and similar L1 providers)
 
@@ -800,7 +804,7 @@ Use `person.kratosId` (camelCase in JWT / `kratos_id` snake_case in introspectio
 
 **Wrong**: Looking up an AD user in a staff directory (or any other system) by `person.login` alone.
 
-`login` is the short sAMAccountName, without the domain. It is unique only within one forest: `OFFICE` and `WTE` can each have a `jdoe`. In a real incident, a `WTE` user received the name, position and staff ID of the `OFFICE` employee with the same login, and the staff ID then decided whom access-granting searches returned. Scope every lookup by forest (from `provider`, see the AD variants above) plus login, or match by `person.id` (the AD GUID).
+`login` is the short sAMAccountName, without the domain. It is unique only within one forest: `OFFICE` and `WTE` can each have a `jdoe`. In a real incident, a `WTE` user received the name, position and staff ID of the `OFFICE` employee with the same login, and the staff ID then decided whom access-granting searches returned. Scope every lookup by forest (`provider_source_ext`, or derived from `provider`, see the AD variants above) plus login, or match by `person.id` (the AD GUID).
 
 ### Do NOT Call person.id "the Global ID of the User"
 
