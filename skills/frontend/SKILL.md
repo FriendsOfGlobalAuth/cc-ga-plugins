@@ -285,6 +285,34 @@ When reviewing or building a starter, do not silently hardcode a CDN host. Add a
 
 > **Warning about other URLs**: URLs containing `global-auth.v8.js` in the path (on any host, e.g. `ga.lime.co/globalauth/ga/global-auth.v8.js`) point to the **internal UI module**, not the official wrapper. The widget UI may appear to work, but the JavaScript API is completely different, private, and **may change in any release** without backward compatibility.
 
+### Minimum Widget Version
+
+`/auth-widget/@8.js` serves the current 8.x build, so these marks matter when a project pins an older 8.x (an npm dependency at a fixed version, a copied bundle). Methods added after 8.0.0, per the widget's CHANGELOG:
+
+| Widget ≥ | Methods |
+|---|---|
+| 8.2.0 | `createClient` |
+| 8.3.6 | `showPasswordChange` |
+| 8.3.8 | `requirePhone`, `requireEmail`, `showUserProfileData` |
+| 8.4.4 | `isAuthenticatedAnonymous`, `isAuthenticatedUserAccount`, `isAuthenticatedUserClient` |
+| 8.4.14 | `getJwt`, `getGlobalVisitor`, `subscribeOnLoginError` |
+| 8.5.0 | `getReadOnlyToken`, `updateTokenScope` |
+| 8.6.5 | `requireUnauthorizedChoice` (earlier: `showPermissionDeniedDialog`, with a different signature) |
+| 8.17.0 | `requireOidc` |
+| 8.18.0 | `authorizeWithoutUi` |
+| 8.19.0 | `requireCaptcha` |
+
+The other methods in this skill exist since 8.0.0 or earlier. Marketing methods (`marketing.*`, `showContactsForm`) carry their versions in `global-auth:marketing`.
+
+Deprecated, still working in 8.x — do not add new calls:
+
+| Since | Method | Use instead |
+|---|---|---|
+| 8.4.4 | `isLoggedIn*` | `isAuthenticated*` |
+| 8.12.0 | `forceRenew` | the renew subscription (`subscribeJWT`); see "Force Renewal" |
+| 8.21.2 | `requireFinamAuthorization`, `requireLimeAuthorization`, `requireMmaAuthorization` (removed in 9) | `requireClientAuthorization` |
+| — | `requireUserIdentifiers` | `requirePhone`, `requireEmail` |
+
 ### TxGlobalAuth Export Type
 
 The official build may export `TxGlobalAuth` as a **constructor function**, not a plain object. Code that checks `typeof window.TxGlobalAuth` must accept both:
@@ -394,6 +422,10 @@ TxGlobalAuth.authorizeAnonymously();
 ```
 
 Only available for `appName` configurations that include a Device provider. Compatible with products with AD Mode and Kratos Mode.
+
+### Without UI (authorizeWithoutUi)
+
+`authorizeWithoutUi({ login, password, provider? })` (widget ≥ 8.18.0) sends the credentials straight to TxAuth and resolves only when that yields a JWT needing no further confirmation; any second factor or code step makes it reject. Your page then handles the user's password itself: keep it out of logs, storage and analytics. It does not replace `authenticate()` / `authorize()` for an interactive login.
 
 ### Logout
 ```javascript
@@ -537,9 +569,17 @@ Rules that integrations get wrong:
 
 **Testing note:** clicking a dialog button through an accessibility-tree reference (tools that click by a11y ref) may not reach the widget's button: the promise stays pending, which looks like a widget bug. A native `element.click()` on the button found in the DOM resolves the promise correctly.
 
-### Advanced: Platform-Specific L2 Authorization
+### Advanced: Client (L2) Authorization
 
-Methods like `requireMmaAuthorization()` and `requireLimeAuthorization()` enable L1→L2 transitions within specific products. This is an advanced feature available only for select `appName` configurations. Consult official documentation or contact the support team.
+`requireClientAuthorization()` requests a JWT enriched with client data (L1→L2). It needs a global login and a widget configured with a client provider, so it works only for select `appName` configurations; consult the GA team. The product-specific `requireFinamAuthorization()`, `requireLimeAuthorization()` and `requireMmaAuthorization()` are deprecated since 8.21.2 and will be removed in 9: replace them with `requireClientAuthorization()`.
+
+### Linking an External Account (requireOidc)
+
+`requireOidc(options?)` (widget ≥ 8.17.0) checks whether an external account (`google`, `apple`, `vk`, `twitter`, `facebook`, `linkedin`, `github`) is linked to the user's account, and shows the widget's linking UI when it is not. With `provider`, it checks that service; without it, any linked external account satisfies it, and if there is none the user is asked to link one of the available services. Which services are available is configured on the GA side. Needs a logged-in user. It resolves once an account is linked and rejects otherwise.
+
+```javascript
+await TxGlobalAuth.requireOidc({ provider: 'google' });
+```
 
 ## Action Confirmation (requireCaptcha)
 
@@ -701,12 +741,11 @@ tp.getResponse().session; // Full session (works for all providers)
 
 ### Force Renewal
 
-Call before long-running server operations where the JWT may expire during processing. If the full request chain (including backend microservice calls with the client JWT) is expected to complete within 20–30 seconds, force renewal is unnecessary.
+`forceRenew()` is **deprecated since 8.12.0**. Per the wrapper's documentation, new data in the JWT must arrive through the renew subscription, which your `subscribeJWT` callback already receives, without forcing a renewal. If a forced renewal looks necessary, first ask the TxAuth server team why the data does not arrive by itself. Existing calls still work; do not add new ones.
 
 ```javascript
+// Legacy — still works in 8.x, do not add new calls
 await TxGlobalAuth.forceRenew();
-// Now safe to start a long-running operation with a fresh token
-const token = TxGlobalAuth.getTokenProvider().getResponse().token;
 ```
 
 ### Token Scope Management
@@ -1061,6 +1100,7 @@ interface Window {
         authenticate(options?: { initialData?: { email?: string; phone?: string }; mountInline?: HighLevelInlineMountOptions; disableSkip?: boolean }): Promise<ILoginResponse>;
         authorize(options?: { mountInline?: HighLevelInlineMountOptions }): Promise<ILoginResponse>;
         authorizeAnonymously(options?: Record<string, unknown>): Promise<ILoginResponse>;
+        authorizeWithoutUi(payload: { login: string; password: string; provider?: string }): Promise<ILoginResponse>;   // ≥ 8.18.0
         logout(options?: Record<string, unknown>): Promise<void>;
         loseClientAuthorization(): Promise<void>;
 
@@ -1073,7 +1113,7 @@ interface Window {
         subscribeJWT(callback: (response: ILoginResponse | null, variant?: Variant) => void): () => void;
         getJwt(): ILoginResponse | null;
         getTokenProvider(variant?: Variant): TokenProvider;
-        forceRenew(): Promise<ILoginResponse>;
+        forceRenew(): Promise<ILoginResponse>;   // deprecated since 8.12.0
         getReadOnlyToken(): Promise<{ token: string }>;
         getGlobalVisitor(): Promise<{ userId: string | null }>;
         updateTokenScope(payload: { scope: Record<string, unknown>; variant?: Variant }): Promise<void>;
@@ -1085,6 +1125,8 @@ interface Window {
         requireEmail(options?: { initialData?: { email?: string }; mountInline?: HighLevelInlineMountOptions; disableSkip?: boolean }): Promise<RequireUserIdentifiersResult>;
         requireUserProfileData(options?: { requirements?: Record<string, boolean>; initialData?: Partial<UserProfileData>; validator?: (key: string, value: string) => void; mountInline?: HighLevelInlineMountOptions; disableSkip?: boolean }): Promise<UserProfileData>;
         // All options are optional in the widget's typings; always pass title and description anyway (see "Permission Denied Flow")
+        requireOidc(options?: { provider?: 'google' | 'apple' | 'vk' | 'twitter' | 'facebook' | 'linkedin' | 'github'; mountInline?: HighLevelInlineMountOptions; disableSkip?: boolean }): Promise<unknown>;   // ≥ 8.17.0
+        requireClientAuthorization(options?: { mountInline?: HighLevelInlineMountOptions; disableSkip?: boolean }): Promise<ILoginResponse>;
         requireUnauthorizedChoice(options?: { title?: string; description?: string; buttonTitle?: string; mountInline?: HighLevelInlineMountOptions; disableSkip?: boolean }): Promise<RequireUnauthorizedChoiceResult>;
 
         // Error subscriptions
